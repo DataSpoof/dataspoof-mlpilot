@@ -45,7 +45,7 @@
         "guid": "directbank",
         "type": "bank",
         "address": "",
-        "description": "Will accept grant funding and project support through bank transfer. Please contact abhishek@dataspoof.info for payment and documentation details."
+        "description": "Will accept grant funding and project support through bank transfer. Please contact abhishek@dataspoof.in for payment and documentation details."
       },
       {
         "guid": "paypal",
