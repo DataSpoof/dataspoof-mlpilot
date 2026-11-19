@@ -1,0 +1,73 @@
+{
+  "version": "v1.0.0",
+  "entity": {
+    "type": "organisation",
+    "role": "owner",
+    "name": "DataSpoof Edtech Private Limited",
+    "email": "abhishek@dataspoof.info",
+    "phone": "+91-8318238637",
+    "description": "DataSpoof Edtech Private Limited is an India-based technology company building software and open-source tools for data science, machine learning and artificial intelligence. DataSpoof develops MLPilot, an open-source machine-learning engineering framework designed to help developers move from raw data to monitored production models through automation, explainability and auditable workflows.",
+    "webpageUrl": {
+      "url": "https://www.dataspoof.in"
+    }
+  },
+  "projects": [
+    {
+      "guid": "dataspoof-mlpilot",
+      "name": "DataSpoof MLPilot",
+      "description": "MLPilot is an open-source machine-learning engineering framework that helps developers take machine-learning projects from raw data to monitored production models. It brings key stages of the ML lifecycle into one workflow, including data ingestion and preparation, data quality checks, feature engineering, model training and evaluation, explainability, experiment management, deployment and model monitoring. Its Python-first interface and Rust-powered components aim to make machine-learning workflows efficient, reproducible and easier to maintain.\n\nMLPilot is built for data scientists, ML engineers, researchers and teams that want a more integrated path from experimentation to production. The project aims to reduce fragmented tooling and make production-oriented machine learning more accessible through an open-source, auditable framework.",
+      "webpageUrl": {
+        "url": "https://github.com/DataSpoof/dataspoof-mlpilot"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/DataSpoof/dataspoof-mlpilot"
+      },
+      "licenses": [
+        "spdx:MIT"
+      ],
+      "tags": [
+        "machine-learning",
+        "mlops",
+        "automl",
+        "python",
+        "rust",
+        "data-science",
+        "model-monitoring",
+        "explainable-ai",
+        "model-deployment",
+        "developer-tools"
+      ]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "directbank",
+        "type": "bank",
+        "address": "",
+        "description": "Will accept grant funding and project support through bank transfer. Please contact abhishek@dataspoof.info for payment and documentation details."
+      },
+      {
+        "guid": "paypal",
+        "type": "payment-provider",
+        "address": "https://www.paypal.me/Abhi958",
+        "description": "Optional channel for community contributions supporting the continued development and maintenance of DataSpoof MLPilot."
+      }
+    ],
+    "plans": [
+      {
+        "guid": "mlpilot-core-development",
+        "status": "active",
+        "name": "MLPilot Core Development",
+        "description": "Annual funding request to support core development of the MLPilot open-source framework. Funding will contribute to engineering time for implementing and improving core capabilities, Python and Rust integration, performance and reliability, automated testing, code quality, developer documentation and production readiness. The goal is to make MLPilot more useful, dependable and sustainable for its open-source users and contributors.",
+        "amount": 10000,
+        "currency": "USD",
+        "frequency": "yearly",
+        "channels": [
+          "directbank",
+          "paypal"
+        ]
+      }
+    ]
+  }
+}
