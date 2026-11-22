@@ -1,5 +1,6 @@
 # === Core Python ===
 import os
+import re
 import math
 import json
 import shutil
@@ -165,18 +166,23 @@ def load_data(file_path):
     print_header("Automated Cleaning")
     print_header("by DataSpoof")
     print_section_header("Loading Data")
-    if file_path.endswith('.csv'):
+    file_path = str(file_path)
+    lower = file_path.lower()
+    if lower.endswith('.csv'):
         return pl.read_csv(file_path,infer_schema_length=10000,try_parse_dates=True,ignore_errors=False)
-    elif file_path.endswith('.tsv'):
+    elif lower.endswith('.tsv'):
         return pl.read_csv(file_path, separator='\t')
-    elif file_path.endswith('.json'):
-        return pl.read_json(file_path)
-    elif file_path.endswith('.parquet'):
+    elif lower.endswith(('.json', '.ndjson', '.jsonl')):
+        try:
+            return pl.read_json(file_path)
+        except Exception:                     # one JSON object per line (NDJSON / JSON Lines)
+            return pl.read_ndjson(file_path)
+    elif lower.endswith('.parquet'):
         return pl.read_parquet(file_path)
-    elif file_path.endswith('.xlsx') or file_path.endswith('.xls'):
-        raise ValueError("Polars does not support direct Excel file reading. Convert to CSV or Parquet.")
-    else:
-        raise ValueError("Unsupported file format")
+    # Excel and everything else mlpilot.read understands (globs, URLs, cloud paths, Arrow, Avro ...)
+    from .ingestion import read
+    df = read(file_path)
+    return df.collect() if isinstance(df, pl.LazyFrame) else df
 
 
 
@@ -357,60 +363,77 @@ def check_data_types(df):
     print(df.dtypes)
     return df.dtypes
 
-def replace_symbols_and_convert_to_float(df):
-    """Replace symbols and convert to float using Polars."""
-    print_section_header("Handling Symbols & Conversion")
-    
-    # Identify columns containing unwanted symbols
-    problematic_cols = [
-        col for col in df.columns 
-        if df[col].cast(pl.Utf8, strict=False).str.contains(r'[\$,₹,-]', literal=False).any()
-    ]
-    
-    if problematic_cols:
-        print("Columns containing $, ₹, -, or , before processing:", problematic_cols)
+_SYMBOLS = r"[\$₹€£,\s]"            # currency signs, thousands separators, spaces (never '-': that is a sign)
 
-    # Replace symbols and convert to float
-    df = df.with_columns([
-        pl.col(col)
-        .str.replace_all(r'[\$,₹,-]', '')  # Remove $, ₹, - symbols
-        .cast(pl.Float64, strict=False)  # Convert to float (coerce errors)
-        .alias(col)
-        for col in problematic_cols
-    ])
-    
+
+def _currency_columns(df, min_share: float = 0.9) -> dict:
+    """Text columns that are numbers once currency symbols and separators are removed:
+    ``{column: cleaned Float64 series}``. Dates, phone numbers and words with hyphens don't qualify."""
+    out = {}
+    for col, dtype in df.schema.items():
+        if dtype != pl.Utf8:
+            continue
+        s = df[col]
+        if not s.str.contains(r"[\$₹€£,]").any():
+            continue
+        cleaned = s.str.replace_all(_SYMBOLS, "").cast(pl.Float64, strict=False)
+        non_null = s.drop_nulls().len()
+        if non_null and cleaned.drop_nulls().len() / non_null >= min_share:
+            out[col] = cleaned.alias(col)
+    return out
+
+
+def replace_symbols_and_convert_to_float(df):
+    """Convert currency / formatted-number text columns ("$1,250", "₹ 3,400.50") to Float64.
+
+    Only text columns where almost every value becomes a number are converted; negative signs
+    are kept, and dates, codes and hyphenated text are left unchanged."""
+    print_section_header("Handling Symbols & Conversion")
+    converted = _currency_columns(df)
+    if converted:
+        print("Converted formatted-number columns to numbers:", list(converted))
+        df = df.with_columns(list(converted.values()))
     return df
 
 
 
 def replace_symbols(df):
-    """Strip currency/separator symbols ($ ₹ , - •) from string columns.
+    """Strip currency symbols and thousands separators from formatted-number text columns.
 
-    Symbol removal runs in the Rust backend (parallel, per value)."""
-
-    # Identify columns containing unwanted symbols
-    problematic_cols = [
-        col for col in df.columns
-        if df[col].cast(pl.Utf8, strict=False).str.contains(r'[\$,₹,-]', literal=False).any()
-    ]
-
-    for col in problematic_cols:
+    Same column rule as :func:`replace_symbols_and_convert_to_float` (text that is a number once
+    the symbols are gone); other text, including dates and hyphenated values, is untouched."""
+    converted = _currency_columns(df)
+    for col in converted:
         values = df[col].cast(pl.Utf8, strict=False).to_list()
-        stripped = _rustcore.strip_symbols(values)  # removes $ ₹ , - •
-        df = df.with_columns(pl.Series(col, stripped))
-
+        df = df.with_columns(pl.Series(col, [None if v is None else re.sub(_SYMBOLS, "", v) for v in values]))
     return df
 
 
 
-def fix_incorrect_data_types(df):
-    for col in df.columns:
-        try:
-            # Attempt to convert column to numeric
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        except Exception as e:
-            # Log any errors for debugging purposes
-            print(f"Could not convert column {col} due to: {e}")
+def fix_incorrect_data_types(df, min_share: float = 0.9):
+    """Convert text columns that hold numbers ("12", " 3.5 ", "1e3") to numeric dtypes.
+
+    A column is converted only when at least ``min_share`` of its non-missing values parse as
+    numbers, so genuine text columns are never wiped to nulls. Works on Polars and pandas frames."""
+    if isinstance(df, pd.DataFrame):
+        df = df.copy()
+        for col in df.columns:
+            if pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col]):
+                parsed = pd.to_numeric(df[col].astype("string").str.strip(), errors="coerce")
+                non_null = df[col].notna().sum()
+                if non_null and parsed.notna().sum() / non_null >= min_share:
+                    df[col] = parsed
+        return df
+    for col, dtype in df.schema.items():
+        if dtype != pl.Utf8:
+            continue
+        stripped = df[col].str.strip_chars()
+        parsed = stripped.cast(pl.Int64, strict=False)
+        if parsed.drop_nulls().len() < stripped.drop_nulls().len():
+            parsed = stripped.cast(pl.Float64, strict=False)
+        non_null = df[col].drop_nulls().len()
+        if non_null and parsed.drop_nulls().len() / non_null >= min_share:
+            df = df.with_columns(parsed.alias(col))
     return df
 
 
@@ -609,34 +632,28 @@ def handle_missing_values(df):
     else:
         print("No missing values found.")
     
-    plt.figure(figsize=(10, 6))
-    msno.bar(df.to_pandas())
+    try:                                         # the chart is optional; imputation is not
+        plt.figure(figsize=(10, 6))
+        msno.bar(df.to_pandas())
+    except ImportError as exc:
+        print(f"(Skipping the missing-values chart: {exc})")
 
-    # Select only numeric columns
-    num_df = df.select(pl.col(pl.Float64, pl.Int64))
-    
-    # Convert to NumPy
-    num_array = num_df.to_numpy()
-
-    # Check shape before applying imputer
-    print(f"Shape of num_df: {num_array.shape}")
-
-    imputer = KNNImputer(n_neighbors=5)
-    imputed_values = imputer.fit_transform(num_array)
-
-    # Check shape after imputation
-    print(f"Shape after imputation: {imputed_values.shape}")
-
-    # Ensure we don't go out of bounds
-    min_columns = min(len(num_df.columns), imputed_values.shape[1])
-
-    df = df.with_columns([pl.Series(num_df.columns[i], imputed_values[:, i]) for i in range(min_columns)])
+    # KNN imputation over the numeric columns that have at least one value (an all-empty column
+    # would be dropped by the imputer and shift every later column).
+    num_cols = [c for c, t in df.schema.items() if t.is_numeric() and df[c].null_count() < df.height]
+    if num_cols and any(df[c].null_count() for c in num_cols):
+        num_array = df.select(num_cols).cast(pl.Float64).to_numpy()
+        imputed_values = KNNImputer(n_neighbors=5).fit_transform(num_array)
+        filled = [c for c in num_cols if df[c].null_count()]       # complete columns keep their dtype
+        print(f"Imputed {len(filled)} numeric columns with KNN: {filled}")
+        df = df.with_columns([pl.Series(c, imputed_values[:, num_cols.index(c)]) for c in filled])
 
     categorical_cols = df.select(pl.col(pl.Utf8, pl.Categorical)).columns
     for col in categorical_cols:
-        mode_value = df[col].mode().to_list()[0]
-        df = df.with_columns(df[col].fill_null(mode_value))
-    
+        modes = df[col].drop_nulls().mode().to_list()     # a mostly-empty column's mode would be null
+        if modes and df[col].null_count():
+            df = df.with_columns(df[col].fill_null(modes[0]))
+
     return df
 
 
@@ -658,6 +675,8 @@ def check_outliers(df):
     for col in numerical_cols:
         Q1 = df[col].quantile(0.25)
         Q3 = df[col].quantile(0.75)
+        if Q1 is None or Q3 is None:            # an all-empty column has no quartiles
+            continue
         IQR = Q3 - Q1
         lower_bound = Q1 - 1.5 * IQR
         upper_bound = Q3 + 1.5 * IQR
@@ -669,7 +688,7 @@ def remove_outliers(df):
     numerical_cols = df.select(pl.col(pl.Float64, pl.Int64)).columns
     for col in numerical_cols:
         keep_mask = _rustcore.iqr_keep_mask(_to_f64_list(df[col]))
-        df = df.filter(pl.Series(keep_mask))
+        df = df.filter(pl.Series(keep_mask) | df[col].is_null())     # a missing value is not an outlier
     return df
 
 
@@ -748,14 +767,15 @@ def check_and_handle_imbalance(df, target_col):
     return df
 
 def check_skewness(df):
-    """Check skewness in numerical columns."""
-    return df.select(pl.col(pl.Float64, pl.Int64)).skew()
+    """Skewness of every numeric column: ``{column: skewness}`` (nulls ignored)."""
+    return {c: df[c].drop_nulls().skew() for c, t in df.schema.items() if t.is_numeric()}
 
 def fix_skewness(df):
     """Fix skewness using log transformation (skewness computed in Rust)."""
     numerical_cols = df.select(pl.col(pl.Float64, pl.Int64)).columns
     for col in numerical_cols:
-        if _rustcore.skewness(_to_f64_list(df[col])) > 1:
+        # log1p is only defined for values > -1; leave columns with larger negatives alone
+        if _rustcore.skewness(_to_f64_list(df[col])) > 1 and (df[col].min() or 0) >= 0:
             df = df.with_columns((df[col] + 1).log().alias(col))
     return df
 
@@ -1286,9 +1306,11 @@ def detect_and_mask_pii_polars(df: pl.DataFrame, sample_size: int = 10) -> pl.Da
     anonymizer = _require("presidio_anonymizer").AnonymizerEngine()
     pii_columns: Dict[str, List[str]] = {}
 
-    # Step 1: Detect PII columns using sampling
-    for col in df.columns:
-        col_data = df[col].drop_nulls().cast(str)
+    # Step 1: Detect PII columns using sampling. Only text columns can hold PII values such as
+    # names, emails or phone numbers; numeric columns produce false positives (counts read as
+    # "bank numbers"). Low-confidence matches are ignored.
+    for col in [c for c, t in df.schema.items() if t == pl.Utf8]:
+        col_data = df[col].drop_nulls()
         if len(col_data) == 0:
             continue
         sample = col_data.sample(min(sample_size, len(col_data)), seed=42)
@@ -1297,7 +1319,8 @@ def detect_and_mask_pii_polars(df: pl.DataFrame, sample_size: int = 10) -> pl.Da
         for value in sample.to_list():
             results = analyzer.analyze(text=value, language='en')
             for r in results:
-                detected_types.add(r.entity_type)
+                if r.score >= 0.6:
+                    detected_types.add(r.entity_type)
 
         if detected_types:
             pii_columns[col] = list(detected_types)
@@ -1365,3 +1388,9 @@ def clean_data(df, background_image_path=None):
     masked_df = detect_and_mask_pii_polars(df)
     df = save_cleaned_data(masked_df)
     return df
+
+
+# `from mlpilot.cleaning import *` (and so `import mlpilot`) exports this module's own functions,
+# not its imports (os, pl, pd, KNNImputer, ...).
+__all__ = sorted(n for n, o in list(globals().items())
+                 if not n.startswith("_") and callable(o) and getattr(o, "__module__", None) == __name__)

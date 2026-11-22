@@ -95,7 +95,7 @@ jobs:
           cache: pip
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: python -m pip install ".[test,mlflow,dvc,feast,evidently,aws,server,signing]" "moto[server]"
+      - run: python -m pip install ".[test,mlflow,dvc,feast,evidently,aws,server,signing]" "moto[server]" prometheus-flask-exporter   # `mlflow server` imports it but recent mlflow does not declare it
       - run: |
           git config --global user.email ci@example.com
           git config --global user.name ci

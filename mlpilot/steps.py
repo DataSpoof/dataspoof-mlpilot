@@ -93,7 +93,8 @@ def _apply_rust_str(df, func, columns=None):
 def _snake_case(name: str) -> str:
     name = str(name).strip()
     name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)      # camelCase -> camel_Case
-    name = re.sub(r"[^\w\s]", "", name)                        # drop punctuation
+    name = re.sub(r"[-./:|]+", " ", name)                      # separators between words -> space
+    name = re.sub(r"[^\w\s]", "", name)                        # drop other punctuation
     name = re.sub(r"\s+", "_", name)                          # spaces -> _
     name = re.sub(r"_+", "_", name).strip("_").lower()
     return name or "column"
@@ -163,9 +164,16 @@ def drop_id_like_columns(df: pl.DataFrame, uniqueness: float = 0.99) -> pl.DataF
     n = df.height or 1
     drop = []
     for col in df.columns:
+        dtype = df.schema[col]
+        if dtype.is_float() or dtype == pl.Boolean:
+            continue                                  # unique floats are measurements, not identifiers
+        if dtype == pl.Utf8:
+            from .quality.profile import semantic_type
+            if semantic_type(df[col], col) == "text":
+                continue                              # free text is unique too, but it is a feature
         ratio = df[col].n_unique() / n
-        looks_id = ratio >= uniqueness or re.fullmatch(r"(?i)(id|uuid|guid|index|_id)", col.replace(" ", "_"))
-        if ratio >= uniqueness or (looks_id and ratio > 0.9):
+        named_id = bool(re.search(r"(?i)(^|_)(id|uuid|guid|index|key)$", col.replace(" ", "_")))
+        if ratio >= uniqueness or (named_id and ratio > 0.9):
             drop.append(col)
     if drop:
         print(f"Dropping ID-like columns: {drop}")
@@ -197,7 +205,7 @@ def replace_disguised_missing(df: pl.DataFrame, extra_sentinels=None,
             # Polars 2 requires matching dtypes for is_in, so cast the sentinels.
             codes = pl.Series(list(numeric_sentinels)).cast(df.schema[col], strict=False)
             df = df.with_columns(
-                pl.when(pl.col(col).is_in(codes))
+                pl.when(pl.col(col).is_in(codes.to_list()))
                 .then(None).otherwise(pl.col(col)).alias(col)
             )
     print(f"Applied {len(sentinels)} sentinel patterns")
@@ -414,7 +422,7 @@ def downcast_numeric(df: pl.DataFrame) -> pl.DataFrame:
     _header("Downcasting numeric dtypes")
     num = _numeric_cols(df)
     if num:
-        df = df.with_columns([pl.col(c).shrink_dtype().alias(c) for c in num])
+        df = df.with_columns([df[c].shrink_dtype() for c in num])     # Series API: works on Polars 1 and 2
     return df
 
 
@@ -520,8 +528,8 @@ def remove_outliers_zscore(df: pl.DataFrame, threshold: float = 3.0, columns=Non
     cols = columns if columns is not None else _numeric_cols(df)
     for col in cols:
         mean, std = df[col].mean(), df[col].std()
-        if std and std > 0:
-            df = df.filter(((pl.col(col) - mean) / std).abs() <= threshold)
+        if std and std > 0:                          # rows with a missing value are not outliers: keep them
+            df = df.filter((((pl.col(col) - mean) / std).abs() <= threshold) | pl.col(col).is_null())
     return df
 
 
@@ -537,7 +545,7 @@ def remove_outliers_mad(df: pl.DataFrame, threshold: float = 3.5, columns=None) 
         mad = float(np.median(np.abs(vals - med)))
         if mad == 0:
             continue
-        df = df.filter((0.6745 * (pl.col(col) - med) / mad).abs() <= threshold)
+        df = df.filter(((0.6745 * (pl.col(col) - med) / mad).abs() <= threshold) | pl.col(col).is_null())
     return df
 
 
@@ -576,7 +584,7 @@ def remove_outliers_by_group(df: pl.DataFrame, group_col: str, columns=None,
         q1 = pl.col(col).quantile(0.25).over(group_col)
         q3 = pl.col(col).quantile(0.75).over(group_col)
         iqr = q3 - q1
-        df = df.filter((pl.col(col) >= q1 - k * iqr) & (pl.col(col) <= q3 + k * iqr))
+        df = df.filter(((pl.col(col) >= q1 - k * iqr) & (pl.col(col) <= q3 + k * iqr)) | pl.col(col).is_null())
     return df
 
 
@@ -605,14 +613,15 @@ def fuzzy_deduplicate(df: pl.DataFrame, key_columns, threshold: int = 90,
     keys = (df.select([pl.col(c).cast(pl.Utf8, strict=False).fill_null("") for c in key_columns])
               .to_numpy().tolist())
     keys = [" ".join(row).strip().lower() for row in keys]
-    kept_keys, keep_mask = [], []
-    for k in keys:
-        dup = any(fuzz.token_sort_ratio(k, kk) >= threshold for kk in kept_keys)
-        keep_mask.append(not dup)
+    if keep not in ("first", "last"):
+        raise ValueError("keep must be 'first' or 'last'")
+    order = range(len(keys)) if keep == "first" else range(len(keys) - 1, -1, -1)
+    kept_keys, keep_mask = [], [False] * len(keys)
+    for i in order:                                    # "last": scan from the end, so the last of a group wins
+        dup = any(fuzz.token_sort_ratio(keys[i], kk) >= threshold for kk in kept_keys)
+        keep_mask[i] = not dup
         if not dup:
-            kept_keys.append(k)
-    if keep == "last":
-        keep_mask = keep_mask[::-1]
+            kept_keys.append(keys[i])
     print(f"Removed {keep_mask.count(False)} near-duplicate rows")
     return df.filter(pl.Series(keep_mask))
 
@@ -645,6 +654,21 @@ def scale_numeric(df: pl.DataFrame, method: str = "standard", columns=None) -> p
     return df
 
 
+def _fmt_edge(v) -> str:
+    text = repr(float(v))
+    return text[:-2] if text.endswith(".0") else text
+
+
+def _cut(s: pl.Series, breaks) -> pl.Series:
+    """Right-closed interval bins labelled ``(lo, hi]``: ``Series.cut`` on Polars 1.x, its replacement
+    ``bin_intervals`` on Polars 2 (where ``cut`` is deprecated)."""
+    if hasattr(pl.Series, "bin_intervals"):
+        edges = ["-inf", *(_fmt_edge(b) for b in breaks), "inf"]
+        labels = [f"({a}, {b}]" for a, b in zip(edges, edges[1:])]
+        return s.bin_intervals(list(breaks), labels=labels, right_closed=True)
+    return s.cut(breaks)
+
+
 def bin_numeric(df: pl.DataFrame, columns, bins: int = 5, strategy: str = "quantile") -> pl.DataFrame:
     """Discretize numeric columns into ``bins`` buckets: ``quantile|uniform``.
 
@@ -665,7 +689,7 @@ def bin_numeric(df: pl.DataFrame, columns, bins: int = 5, strategy: str = "quant
             step = (hi - lo) / bins
             breaks = [lo + step * i for i in range(1, bins)]
         if breaks:
-            df = df.with_columns(s.cut(breaks).alias(f"{col}_bin"))
+            df = df.with_columns(_cut(s, breaks).alias(f"{col}_bin"))
     return df
 
 
@@ -737,7 +761,7 @@ def check_referential_integrity(df: pl.DataFrame, column: str, valid_values,
                                 drop_invalid: bool = False) -> pl.DataFrame:
     """Report (optionally drop) rows whose ``column`` value is not in ``valid_values``."""
     _header(f"Checking referential integrity of '{column}'")
-    valid_values = pl.Series(list(valid_values)).cast(df.schema[column], strict=False)
+    valid_values = pl.Series(list(valid_values)).cast(df.schema[column], strict=False).to_list()
     bad = df.filter(~pl.col(column).is_in(valid_values) & pl.col(column).is_not_null()).height
     print(f"'{column}': {bad} rows reference values not in the allowed set")
     if drop_invalid and bad:

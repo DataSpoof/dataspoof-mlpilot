@@ -12,7 +12,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Rust engine](https://img.shields.io/badge/engine-Rust-B7410E?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Polars](https://img.shields.io/badge/dataframes-Polars-CD792C?logo=polars&logoColor=white)](https://pola.rs/)
-[![Tests](https://img.shields.io/badge/tests-372%20passing-2ea44f)](#%EF%B8%8F-building--contributing)
+[![Tests](https://img.shields.io/badge/tests-570%20passing-2ea44f)](#%EF%B8%8F-building--contributing)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f)](#-license)
 
 **[What's new](#-whats-new-in-230)** ·
@@ -33,6 +33,10 @@ the model registry, deployment, monitoring, and plain-English insights. A **Rust
 handles the heavy computation, and every stage shares one `fit` / `transform` / `save` contract.
 
 > **AutomatedCleaning is now MLPilot.** Install `dataspoof-mlpilot` and `import mlpilot`. Existing code and saved models keep working: see [Moving from AutomatedCleaning](#moving-from-automatedcleaning).
+
+> **2.3.1** is a bug-fix release from a test sweep of every public function: the interactive
+> `clean_data()` flow, the currency / type / outlier helpers, several `mlpilot.steps` functions and
+> Polars 2 compatibility. See the [changelog](CHANGELOG.md).
 
 ## ✨ What's new in 2.3.0
 

@@ -24,3 +24,6 @@ site/
 
 # Windows debug symbols from local Rust builds
 *.pdb
+
+# outputs written when the example notebooks are run
+examples/*_outputs/

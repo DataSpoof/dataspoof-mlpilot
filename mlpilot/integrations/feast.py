@@ -145,7 +145,7 @@ def export_to_feast(store, repo_dir, *, project: str = "mlpilot", views: list | 
     fs = feast.FeatureStore(repo_path=str(repo))
     if apply:
         ns = runpy.run_path(str(repo / "features.py"))
-        objs = [o for o in ns.values() if isinstance(o, (feast.Entity, feast.FeatureView))]
+        objs: list = [o for o in ns.values() if isinstance(o, (feast.Entity, feast.FeatureView))]
         fs.apply(objs)
         if materialize:
             start = min(s for s in starts if s is not None) - _dt.timedelta(seconds=1)

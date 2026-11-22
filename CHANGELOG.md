@@ -3,6 +3,51 @@
 All notable changes are listed here. The project follows [Semantic Versioning](https://semver.org/)
 (see the [versioning policy](https://dataspoof.github.io/dataspoof-mlpilot/policies/)).
 
+## [2.3.1] — 2026-11-22
+
+### Fixed (found by a test sweep of every public function)
+- **`clean_data()` (the interactive flow):**
+  - It crashed on numeric columns with negative values (`replace_symbols_and_convert_to_float`
+    applied string operations to floats). It also crashed when a text column's most common
+    value was missing.
+  - It no longer flags numeric columns (counts, fares) as PII, and it ignores low-confidence
+    PII matches.
+  - Complete numeric columns keep their integer dtype after KNN imputation.
+  - The missing-values chart is optional: without the `[dashboard]` extra (matplotlib) the
+    chart is skipped and imputation still runs.
+- **Currency conversion:**
+  - `replace_symbols_and_convert_to_float` and `replace_symbols` only convert text columns
+    that are numbers once `$ ₹ € £` and thousands separators are removed.
+  - The minus sign is kept, so "-$5" becomes -5.0, not 5.0.
+  - Dates and hyphenated text are left untouched.
+- **Cleaning helpers:**
+  - `check_skewness` works on Polars 2 and returns `{column: skewness}`.
+  - `fix_skewness` skips columns with values below -1.
+  - `fix_incorrect_data_types` works on Polars frames and converts only columns that are
+    mostly numeric (including pandas frames with Arrow-backed string columns).
+  - `remove_outliers` keeps rows with missing values, and `check_outliers` handles all-empty
+    columns.
+- **`load_data`:** reads JSON / NDJSON and every format `mlpilot.read` supports.
+- **`mlpilot.steps`:**
+  - `drop_id_like_columns` keeps unique measurements (floats) and free text.
+  - The outlier removers keep rows with missing values.
+  - `fuzzy_deduplicate(keep="last")` now keeps the last row of each group.
+  - `downcast_numeric` actually downcasts.
+  - The Polars 2 deprecations in `replace_disguised_missing`, `check_referential_integrity`
+    and `bin_numeric` are gone.
+- **`standardize_column_names`:** maps `-` `.` `/` `:` `|` to `_`. Behaviour change:
+  `first-name` → `first_name` (previously `firstname`).
+- **Namespace:** `import mlpilot` no longer exposes the cleaning module's imports (`mlpilot.os`,
+  `mlpilot.pl`, `mlpilot.KNNImputer`, ...).
+- **Type checking:** mypy is clean with the mlflow and feast extras installed.
+
+### Tests
+- New suites:
+  - `test_api_surface`: every module imports, `__all__` is accurate, and every CLI command
+    answers `--help`.
+  - `test_steps_functions`, covering every function in `mlpilot.steps`.
+  - `test_legacy_cleaning`: the scripted interactive flow plus its helpers.
+
 ## [2.3.0] — 2026-11-22
 
 ### Added: the autonomous execution engine

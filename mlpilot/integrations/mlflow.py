@@ -30,6 +30,7 @@ from pathlib import Path
 try:
     import mlflow
     import mlflow.pyfunc
+    from mlflow.pyfunc import PythonModel
     from mlflow.entities import Metric, Param, RunTag
     from mlflow.tracking import MlflowClient
 except ImportError as exc:                                   # pragma: no cover
@@ -148,7 +149,7 @@ def export_tracker(tracker, *, experiment: str | None = None, tracking_uri: str 
 
 
 # ── models ──────────────────────────────────────────────────────────────────
-class AutoMLPyfunc(mlflow.pyfunc.PythonModel):
+class AutoMLPyfunc(PythonModel):
     """Wraps a saved AutoML / AutoCluster / Forecaster directory as an MLflow pyfunc model."""
 
     def load_context(self, context):
