@@ -1,11 +1,97 @@
-# Model security: API reference
+# Model security & privacy: API reference
 
-Generated from the source docstrings. For a task-oriented introduction, read the [Model security guide](../guide/model-security.md).
+Generated from the source docstrings. For a task-oriented introduction, read the [Model security & privacy guide](../guide/model-security.md).
 
 **On this page:**
 
+- [`mlpilot.model_privacy`](#mlpilotmodel_privacy): `MembershipReport`, `membership_inference_test`, `ExtractionReport`, `extraction_test`
 - [`mlpilot.poisoning`](#mlpilotpoisoning): `PoisoningReport`, `poisoning_report`
 - [`mlpilot.robustness`](#mlpilotrobustness): `RobustnessReport`, `robustness_report`
+
+---
+
+## `mlpilot.model_privacy`
+
+<sub>Source: [`mlpilot/model_privacy.py`](https://github.com/DataSpoof/dataspoof-mlpilot/blob/main/mlpilot/model_privacy.py)</sub>
+
+Privacy attacks against your own model: does it leak who was in the training data, and how
+easily can someone copy it through its API?
+
+```python
+mi = membership_inference_test(model, train_df, holdout_df)
+mi.auc, mi.advantage, mi.risk                 # 0.5 / 0.0 = no leakage
+ex = extraction_test(model, holdout_df, queries=(100, 500, 2000))
+ex.table                                      # surrogate agreement vs number of API queries
+```
+
+* **Membership inference** (the loss-threshold attack of Yeom et al.): overfitted models are
+  more confident on rows they were trained on. The attack scores every row by the model's
+  probability of its true label and tries to separate training rows from held-out rows.
+  `auc` is the attack's ROC AUC: 0.5 means chance, so nothing leaks. `advantage` is the
+  best TPR − FPR. Risk levels: low (AUC < 0.55), medium (< 0.65), high.
+* **Model extraction**: an attacker sends synthetic queries, drawn from each column's observed
+  values, and trains a decision tree on the answers. `agreement` is how often the copy matches
+  your model on real held-out rows. High agreement after few queries means the API needs rate
+  limits, query monitoring, and labels rather than probabilities.
+
+### class `MembershipReport`
+
+```python
+class MembershipReport:
+```
+
+| Field | Type | Default |
+|---|---|---|
+| `auc` | `float` | required |
+| `advantage` | `float` | required |
+| `train_rows` | `int` | required |
+| `holdout_rows` | `int` | required |
+| `mean_confidence` | `dict` | required |
+
+#### `MembershipReport.risk` *(property)*
+
+```python
+risk: str
+```
+
+#### `MembershipReport.summary()`
+
+```python
+summary() -> str
+```
+
+### `membership_inference_test()`
+
+```python
+def membership_inference_test(model, train: pl.DataFrame, holdout: pl.DataFrame, *, target: str | None=None, max_rows: int=5000, seed: int=0) -> MembershipReport
+```
+
+Run the loss-threshold membership attack (classification models).
+
+### class `ExtractionReport`
+
+```python
+class ExtractionReport:
+```
+
+| Field | Type | Default |
+|---|---|---|
+| `table` | `pl.DataFrame` | required |
+| `target` | `str` | required |
+
+#### `ExtractionReport.summary()`
+
+```python
+summary() -> str
+```
+
+### `extraction_test()`
+
+```python
+def extraction_test(model, holdout: pl.DataFrame, *, target: str | None=None, queries=(100, 500, 2000), seed: int=0) -> ExtractionReport
+```
+
+Simulate stealing the model through its prediction API with synthetic queries.
 
 ---
 

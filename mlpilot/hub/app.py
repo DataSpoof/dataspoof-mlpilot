@@ -32,8 +32,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from .db import (ROLES, STAGES, ApiToken, AuditEntry, Membership, ModelVersion, MonitorResult, PromotionRequest, Run,
-                 User, Workspace, init_db, utcnow)
+from .db import (QUOTA_KEYS, ROLES, STAGES, ApiToken, AuditEntry, Membership, ModelVersion, MonitorResult,
+                 Organization, PromotionRequest, Run, Usage, User, Workspace, init_db, utcnow)
 from .security import (AuthError, OIDCVerifier, audit, create_token, require_role, role_in, user_from_api_token,
                        user_from_claims, verify_audit_chain)
 from .storage import ArtifactStore, sha256, untar_to
@@ -47,6 +47,20 @@ class WorkspaceIn(BaseModel):
     name: str = Field(pattern=_NAME)
     require_approval: bool = True
     policy: dict = {}
+    org: str | None = None         # tenant that owns the workspace
+
+
+class OrgIn(BaseModel):
+    name: str = Field(pattern=_NAME)
+    quotas: dict = {}
+
+
+class QuotaIn(BaseModel):
+    quotas: dict
+
+
+class OrgUserIn(BaseModel):
+    user: str                      # email, subject or user id
 
 
 class MemberIn(BaseModel):
@@ -171,6 +185,22 @@ def create_app(*, database_url: str | None = None, artifact_root: str | None = N
         finally:
             session.close()
 
+    def meter(session, org_id, kind: str, amount: float = 1.0):
+        """Add to the organisation's usage counter for today (no-op for platform resources)."""
+        if not org_id:
+            return
+        day = utcnow().date().isoformat()
+        from sqlalchemy.exc import IntegrityError
+        row = session.scalar(select(Usage).where(Usage.org_id == org_id, Usage.day == day, Usage.kind == kind))
+        if row is None:
+            try:
+                with session.begin_nested():            # a concurrent request may create today's row first
+                    session.add(Usage(org_id=org_id, day=day, kind=kind, amount=amount))
+                return
+            except IntegrityError:
+                row = session.scalar(select(Usage).where(Usage.org_id == org_id, Usage.day == day, Usage.kind == kind))
+        row.amount = (row.amount or 0) + amount
+
     def current_user(request: Request, session=Depends(db)) -> User:
         header = request.headers.get("authorization", "")
         if not header.lower().startswith("bearer "):
@@ -183,6 +213,7 @@ def create_app(*, database_url: str | None = None, artifact_root: str | None = N
         else:
             raise AuthError(401, "Invalid token")
         request.state.actor = user.email or user.subject
+        meter(session, user.org_id, "api_calls")
         return user
 
     def ip(request: Request) -> str | None:
@@ -332,13 +363,125 @@ def create_app(*, database_url: str | None = None, artifact_root: str | None = N
         return {"id": sa.id, "subject": sa.subject, "token": token}
 
     # ── workspaces & members ────────────────────────────────────────────────
+    # -- organisations (tenants), quotas and usage --------------------------
+    def org_named(session, name: str) -> Organization:
+        org = session.scalar(select(Organization).where(Organization.name == name))
+        if org is None:
+            raise AuthError(404, "Organisation not found")
+        return org
+
+    def org_counts(session, org_id: str) -> dict:
+        ws_ids = [w.id for w in session.scalars(select(Workspace).where(Workspace.org_id == org_id))]
+        today = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        versions = []
+        runs_today = 0
+        if ws_ids:
+            versions = list(session.scalars(select(ModelVersion).where(ModelVersion.workspace_id.in_(ws_ids))))
+            runs_today = session.scalar(select(func.count(Run.id)).where(Run.workspace_id.in_(ws_ids),
+                                                                         Run.started_at >= today)) or 0
+        return {"max_workspaces": len(ws_ids), "max_model_versions": len(versions),
+                "max_storage_bytes": sum(v.artifact_bytes or 0 for v in versions), "max_runs_per_day": runs_today}
+
+    def check_quota(session, org_id, key: str, adding: float = 1):
+        if not org_id:
+            return
+        org = session.get(Organization, org_id)
+        limit = (org.quotas or {}).get(key) if org else None
+        if limit is None:
+            return
+        used = org_counts(session, org_id)[key]
+        if used + adding > limit:
+            raise HTTPException(429, f"Quota exceeded for organisation {org.name!r}: {key} = {limit} "
+                                     f"(in use {used}, this request adds {adding:g})")
+
+    def check_quotas_body(quotas: dict):
+        bad = sorted(set(quotas) - set(QUOTA_KEYS))
+        if bad or not all(isinstance(v, (int, float)) and v >= 0 for v in quotas.values()):
+            raise HTTPException(422, f"quotas take non-negative numbers for {list(QUOTA_KEYS)}"
+                                     + (f"; unknown {bad}" if bad else ""))
+
+    @app.post("/api/orgs", status_code=201)
+    def create_org(body: OrgIn, request: Request, user: User = Depends(current_user), session=Depends(db)):
+        if not user.is_admin:
+            raise AuthError(403, "Only platform admins can create organisations")
+        check_quotas_body(body.quotas)
+        if session.scalar(select(Organization).where(Organization.name == body.name)):
+            raise HTTPException(409, "Organisation exists")
+        org = Organization(name=body.name, quotas=body.quotas)
+        session.add(org)
+        session.flush()
+        audit(session, request.state.actor, "org.created", target=org.name, details={"quotas": org.quotas},
+              ip=ip(request))
+        return _jsonable(org)
+
+    @app.get("/api/orgs")
+    def list_orgs(user: User = Depends(current_user), session=Depends(db)):
+        q = select(Organization).order_by(Organization.name)
+        if not user.is_admin:
+            q = q.where(Organization.id == (user.org_id or ""))
+        return _jsonable(list(session.scalars(q)))
+
+    @app.put("/api/orgs/{org_name}/quotas")
+    def set_quotas(org_name: str, body: QuotaIn, request: Request, user: User = Depends(current_user),
+                   session=Depends(db)):
+        if not user.is_admin:
+            raise AuthError(403, "Only platform admins can change quotas")
+        check_quotas_body(body.quotas)
+        org = org_named(session, org_name)
+        before, org.quotas = org.quotas, body.quotas
+        audit(session, request.state.actor, "org.quotas_set", target=org.name,
+              details={"from": before, "to": body.quotas}, ip=ip(request))
+        return _jsonable(org)
+
+    @app.post("/api/orgs/{org_name}/users")
+    def add_org_user(org_name: str, body: OrgUserIn, request: Request, user: User = Depends(current_user),
+                     session=Depends(db)):
+        if not user.is_admin:
+            raise AuthError(403, "Only platform admins can assign users to organisations")
+        org = org_named(session, org_name)
+        target = session.scalar(select(User).where((User.id == body.user) | (User.subject == body.user)
+                                                   | (User.email == body.user)))
+        if target is None:
+            target = User(subject=f"pending:{body.user}", email=body.user, name=body.user)
+            session.add(target)
+            session.flush()
+        if target.org_id and target.org_id != org.id:
+            raise HTTPException(409, "The user belongs to another organisation")
+        foreign = session.scalar(select(func.count(Membership.id))
+                                 .join(Workspace, Workspace.id == Membership.workspace_id)
+                                 .where(Membership.user_id == target.id, Workspace.org_id != org.id,
+                                        Workspace.org_id.is_not(None)))
+        if foreign:
+            raise HTTPException(409, "The user is a member of another organisation's workspaces")
+        target.org_id = org.id
+        audit(session, request.state.actor, "org.user_added", target=target.email or target.subject,
+              details={"org": org.name}, ip=ip(request))
+        return {"user": target.id, "org": org.name}
+
+    @app.get("/api/orgs/{org_name}/usage")
+    def org_usage(org_name: str, days: int = 30, user: User = Depends(current_user), session=Depends(db)):
+        import datetime as _dt
+        org = org_named(session, org_name)
+        if not user.is_admin and user.org_id != org.id:
+            raise AuthError(403, "Not a member of this organisation")
+        since = (utcnow().date() - _dt.timedelta(days=max(1, min(days, 366)) - 1)).isoformat()
+        rows = list(session.scalars(select(Usage).where(Usage.org_id == org.id, Usage.day >= since)))
+        totals: dict = {}
+        for r in rows:
+            totals[r.kind] = totals.get(r.kind, 0) + r.amount
+        daily = [{"day": r.day, "kind": r.kind, "amount": r.amount} for r in sorted(rows, key=lambda r: (r.day, r.kind))]
+        return {"org": org.name, "since": since, "totals": totals, "daily": daily,
+                "in_use": org_counts(session, org.id), "quotas": org.quotas}
+
     @app.post("/api/workspaces", status_code=201)
     def create_workspace(body: WorkspaceIn, request: Request, user: User = Depends(current_user), session=Depends(db)):
         if not user.is_admin:
             raise AuthError(403, "Only platform admins can create workspaces")
         if session.scalar(select(Workspace).where(Workspace.name == body.name)):
             raise HTTPException(409, "Workspace exists")
-        ws = Workspace(name=body.name, require_approval=body.require_approval, policy=body.policy)
+        org_id = org_named(session, body.org).id if body.org else None
+        check_quota(session, org_id, "max_workspaces")
+        ws = Workspace(name=body.name, require_approval=body.require_approval, policy=body.policy, org_id=org_id)
         session.add(ws)
         session.flush()
         audit(session, request.state.actor, "workspace.created", workspace=ws.name,
@@ -358,9 +501,13 @@ def create_app(*, database_url: str | None = None, artifact_root: str | None = N
         target = session.scalar(select(User).where((User.id == body.user) | (User.subject == body.user)
                                                    | (User.email == body.user)))
         if target is None:                      # pre-provision by email; matched on first SSO login
-            target = User(subject=f"pending:{body.user}", email=body.user, name=body.user)
+            target = User(subject=f"pending:{body.user}", email=body.user, name=body.user, org_id=ws.org_id)
             session.add(target)
             session.flush()
+        if ws.org_id and not target.is_admin and target.org_id != ws.org_id:
+            raise AuthError(403, "Cross-tenant membership refused: the user belongs to "
+                                 + ("no organisation" if not target.org_id else "another organisation")
+                                 + " (assign them with POST /api/orgs/<org>/users)")
         m = session.scalar(select(Membership).where(Membership.user_id == target.id, Membership.workspace_id == ws.id))
         before = m.role if m else None
         if m is None:
@@ -395,10 +542,12 @@ def create_app(*, database_url: str | None = None, artifact_root: str | None = N
     def create_run(ws_name: str, body: RunIn, user: User = Depends(current_user), session=Depends(db)):
         ws = workspace(session, ws_name)
         authorize(session, user, ws, "data_scientist")
+        check_quota(session, ws.org_id, "max_runs_per_day")
         run = Run(workspace_id=ws.id, experiment=body.experiment, name=body.name, params=body.params, tags=body.tags,
                   metrics={}, datasets=[], created_by=user.id)
         session.add(run)
         session.flush()
+        meter(session, ws.org_id, "runs")
         return _jsonable(run)
 
     def run_row(session, user, run_id: str, minimum: str) -> Run:
@@ -452,6 +601,8 @@ def create_app(*, database_url: str | None = None, artifact_root: str | None = N
         blob = artifact.file.read(max_bytes + 1)
         if len(blob) > max_bytes:
             raise HTTPException(413, f"Artifact larger than {max_bytes // (1024 * 1024)} MB")
+        check_quota(session, ws.org_id, "max_model_versions")
+        check_quota(session, ws.org_id, "max_storage_bytes", len(blob))
         with tempfile.TemporaryDirectory() as tmp:            # inspect it; never unpickle on the server
             try:
                 root = untar_to(blob, tmp)
@@ -483,9 +634,12 @@ def create_app(*, database_url: str | None = None, artifact_root: str | None = N
         mv = ModelVersion(workspace_id=ws.id, model_name=model_name, version=version, stage="dev", task=task,
                           target=manifest.get("target"), metrics=json.loads(metrics) if metrics else {},
                           description=description, run_id=run_id, artifact_uri=uri, artifact_sha256=sha256(blob),
-                          model_sha256=manifest.get("model_sha256"), signed=signed, created_by=user.id)
+                          model_sha256=manifest.get("model_sha256"), signed=signed, created_by=user.id,
+                          artifact_bytes=len(blob))
         session.add(mv)
         session.flush()
+        meter(session, ws.org_id, "model_versions")
+        meter(session, ws.org_id, "storage_bytes", len(blob))
         audit(session, request.state.actor, "model.registered", workspace=ws.name, target=f"{model_name}:v{version}",
               details={"sha256": mv.artifact_sha256, "signed": signed, "run_id": run_id}, ip=ip(request))
         return _jsonable(mv)

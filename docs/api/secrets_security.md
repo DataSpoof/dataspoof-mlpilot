@@ -20,10 +20,10 @@ OIDC settings, SQL / Snowflake connection strings, alert-routing keys) you can g
 *reference* instead of the value:
 
     vault://secret/ml/hub#database_url        HashiCorp Vault, KV v2 (mount "secret", path "ml/hub", key)
-  vault://kv1:ml/hub#password               a KV v1 mount (`<mount>:` prefix)
-  aws-sm://prod/hub#database_url            AWS Secrets Manager (JSON secret + key, or the whole string)
-  env://HUB_DB_URL                          another environment variable
-  file:///run/secrets/hub_db_url            a mounted file (Docker / Kubernetes secrets)
+    vault://kv1:ml/hub#password               a KV v1 mount (`<mount>:` prefix)
+    aws-sm://prod/hub#database_url            AWS Secrets Manager (JSON secret + key, or the whole string)
+    env://HUB_DB_URL                          another environment variable
+    file:///run/secrets/hub_db_url            a mounted file (Docker / Kubernetes secrets)
 
 ```python
 from mlpilot.secretstore import get_secret, resolve
@@ -116,6 +116,7 @@ Model signing: prove a saved model came from your training pipeline and wasn't a
 
 A saved model directory is signed with an Ed25519 private key (kept by the training job / CI);
 deployments verify it with the public key **before** anything is unpickled:
+
 ```
 from mlpilot.security import generate_keypair, sign_model, verify_model
 generate_keypair("keys/model_signing.pem", "keys/model_signing.pub")

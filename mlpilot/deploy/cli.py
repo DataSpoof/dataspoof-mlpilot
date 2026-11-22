@@ -1,5 +1,6 @@
 """Command line: ``mlpilot serve | score | docker | export | monitor | hub`` and the
-model CI/CD steps ``train | gate | register | promote | release | latest | deploy-sagemaker | cicd init``.
+model CI/CD steps ``train | gate | register | promote | release | latest | deploy-sagemaker | cicd init``, and
+the autonomous engine ``plan | run | approve | status``.
 
 Also available as ``python -m mlpilot.deploy ...``.
 """
@@ -101,9 +102,12 @@ def main(argv=None):
     ha.add_argument("--email")
 
     _pipeline_parsers(sub)
+    _engine_parsers(sub)
     args = p.parse_args(argv)
     if args.cmd in _PIPELINE:
         return _run_pipeline(args)
+    if args.cmd in _ENGINE:
+        return _run_engine(args)
     if args.cmd == "container":
         return _container()
     if args.cmd == "hub":
@@ -153,6 +157,122 @@ def main(argv=None):
 
 # ── model CI/CD commands (see mlpilot.cicd) ───────────────────────
 _PIPELINE = ("train", "gate", "register", "promote", "release", "latest", "deploy-sagemaker", "cicd")
+_ENGINE = ("plan", "run", "approve", "status", "scan-model", "sbom", "backup", "restore", "dr-drill")
+
+
+def _engine_parsers(sub):
+    def goal_args(p):
+        p.add_argument("--goal", help="goal file (YAML / JSON)")
+        p.add_argument("--text", help='the goal in words, e.g. "predict churned with AUC above 0.85"')
+        p.add_argument("--data", help="data source (overrides the goal's)")
+        p.add_argument("--name", help="model name (overrides the goal's)")
+        p.add_argument("--no-llm", action="store_true", help="draft goals from --text with rules only")
+
+    p = sub.add_parser("plan", help="show the goal and the workflow the engine would run")
+    goal_args(p)
+    p.add_argument("--save", help="write the (drafted) goal to this YAML file")
+    r = sub.add_parser("run", help="run a goal end to end (resumable; stops at gates and approvals)")
+    goal_args(r)
+    r.add_argument("--out", required=True, help="run directory")
+    r.add_argument("--resume", action="store_true", help="continue the run in --out")
+    r.add_argument("--by", help="who is running it (default: the OS user)")
+    a = sub.add_parser("approve", help="approve a step that is waiting (four-eyes: not the requester)")
+    a.add_argument("run_dir")
+    a.add_argument("--step", default="promote")
+    a.add_argument("--by", required=True)
+    a.add_argument("--note", default="")
+    st = sub.add_parser("status", help="show a run's steps, costs and what it is waiting for")
+    st.add_argument("run_dir")
+    sc = sub.add_parser("scan-model", help="scan model files for code that would run on load (exit 1 if critical)")
+    sc.add_argument("path")
+    sb = sub.add_parser("sbom", help="write a CycloneDX SBOM of the installed dependencies")
+    sb.add_argument("--out", default="sbom.cdx.json")
+    sb.add_argument("--all", action="store_true", help="every installed package, not just MLPilot's dependencies")
+    def pairs(p, flag, help_):
+        p.add_argument(flag, action="append", default=[], metavar="NAME=PATH", help=help_)
+
+    bk = sub.add_parser("backup", help="checksummed backup of registries, runs, monitors and SQLite databases")
+    pairs(bk, "--source", "directory or file to back up (repeat)")
+    pairs(bk, "--sqlite", "SQLite database to snapshot consistently, e.g. hub=hub.db (repeat)")
+    bk.add_argument("--out", required=True)
+    bk.add_argument("--keep-last", type=int, help="then delete all but the newest N backups")
+    rs = sub.add_parser("restore", help="verify and restore sources from a backup")
+    rs.add_argument("backup_path")
+    pairs(rs, "--target", "where to restore a source, e.g. registry=/srv/registry (repeat)")
+    rs.add_argument("--overwrite", action="store_true")
+    dr = sub.add_parser("dr-drill", help="backup -> restore -> compare; reports RTO and RPO (exit 1 on failure)")
+    pairs(dr, "--source", "directory or file (repeat)")
+    pairs(dr, "--sqlite", "SQLite database (repeat)")
+    dr.add_argument("--workdir", required=True)
+    dr.add_argument("--rto-limit", type=float)
+
+
+def _load_goal(args):
+    from ..orchestration import Goal, goal_from_text
+    overrides = {k: v for k, v in (("data", args.data), ("name", args.name)) if v}
+    if args.goal:
+        d = Goal.from_file(args.goal).to_dict()
+        d.update(overrides)
+        return Goal.from_dict(d)
+    if args.text:
+        return goal_from_text(args.text, use_llm=False if args.no_llm else "auto", **overrides)
+    raise SystemExit("give --goal FILE or --text \"...\"")
+
+
+def _run_engine(args) -> int:
+    from .. import orchestration as orc
+    if args.cmd == "plan":
+        goal = _load_goal(args)
+        print(goal.to_yaml())
+        print(orc.plan(goal).describe())
+        if args.save:
+            goal.to_yaml(args.save)
+        return 0
+    if args.cmd == "run":
+        res = orc.resume(args.out, requested_by=args.by) if args.resume else orc.run(_load_goal(args), args.out,
+                                                                                     requested_by=args.by)
+        print(res.summary())
+        return {"succeeded": 0, "waiting_approval": 3}.get(res.status, 1)
+    if args.cmd == "approve":
+        entry = orc.approve(args.run_dir, args.step, by=args.by, note=args.note)
+        print(f"approved {entry['step']} by {entry['by']}; continue with: mlpilot run --out {args.run_dir} --resume")
+        return 0
+    if args.cmd == "scan-model":
+        from ..supply_chain import scan_model
+        rep = scan_model(args.path)
+        print(rep.summary())
+        return 0 if rep.passed else 1
+    if args.cmd in ("backup", "restore", "dr-drill"):
+        from .. import backup as bk
+
+        def kv(items):
+            out = {}
+            for it in items:
+                if "=" not in it:
+                    raise SystemExit(f"expected NAME=PATH, got {it!r}")
+                k, v = it.split("=", 1)
+                out[k] = v
+            return out
+        if args.cmd == "backup":
+            m = bk.backup(kv(args.source), args.out, sqlite=kv(args.sqlite))
+            print(f"backup written to {m.path}: {', '.join(m.sources)}")
+            if args.keep_last:
+                for p in bk.prune_backups(args.out, keep_last=args.keep_last):
+                    print(f"removed old backup {p}")
+            return 0
+        if args.cmd == "restore":
+            print(json.dumps(bk.restore(args.backup_path, kv(args.target), overwrite=args.overwrite)))
+            return 0
+        drill = bk.dr_drill(kv(args.source), args.workdir, sqlite=kv(args.sqlite), rto_limit=args.rto_limit)
+        print(drill.summary())
+        return 0 if drill.passed else 1
+    if args.cmd == "sbom":
+        from ..supply_chain import generate_sbom
+        sbom = generate_sbom(args.out, all_packages=args.all)
+        print(f"{args.out}: {len(sbom['components'])} components")
+        return 0
+    print(orc.status(args.run_dir).summary())
+    return 0
 
 
 def _pipeline_parsers(sub):

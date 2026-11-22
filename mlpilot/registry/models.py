@@ -5,6 +5,7 @@ Layout::
     <root>/<model name>/v<N>/model/        the saved model (checksummed by AutoML.save)
     <root>/<model name>/v<N>/version.json  metrics, run, dataset, stage, who/when
     <root>/<model name>/history.jsonl      every stage change, with who, when and why
+    <root>/<model name>/governance.json    risk level, owner, review date, retirement
 """
 
 from __future__ import annotations
@@ -25,6 +26,13 @@ _OPS = {">=": operator.ge, ">": operator.gt, "<=": operator.le, "<": operator.lt
 
 class PromotionError(Exception):
     """A model version failed the checks required to move to a stage."""
+
+
+class ModelRetiredError(KeyError):
+    """The model was retired; loading it needs ``allow_retired=True``."""
+
+
+RISK_LEVELS = ("minimal", "limited", "high", "unacceptable")
 
 
 @dataclasses.dataclass
@@ -202,9 +210,75 @@ class ModelRegistry:
         prod = [v for v in vs if v.stage == "production"]
         return prod[-1] if prod else vs[-1]
 
-    def load(self, name: str, version: int | None = None, stage: str | None = None):
-        """Load a model (default: the production version). The checksum is verified on load."""
+    def load(self, name: str, version: int | None = None, stage: str | None = None, *, allow_retired: bool = False):
+        """Load a model (default: the production version). The checksum is verified on load.
+        A retired model raises :class:`ModelRetiredError` unless ``allow_retired``."""
+        gov = self.governance(name)
+        if gov.get("retired") and not allow_retired:
+            raise ModelRetiredError(f"{name} was retired on {gov['retired']['at']} ({gov['retired']['reason']})"
+                                    + (f"; use {gov['retired']['replacement']!r} instead"
+                                       if gov["retired"].get("replacement") else ""))
         return self.get(name, version, stage).load()
+
+    # ── governance: risk and retirement ─────────────────────────────────────
+    def governance(self, name: str) -> dict:
+        """Risk level, owner, review date and retirement of model ``name`` (``{}`` if never set)."""
+        p = self._dir(name) / "governance.json"
+        return read_json(p) if p.exists() else {}
+
+    def set_risk(self, name: str, level: str, *, reason: str, owner: str | None = None,
+                 review_by: str | None = None) -> dict:
+        """Classify the model's risk (``minimal`` / ``limited`` / ``high`` / ``unacceptable``).
+
+        * ``unacceptable``: no version can move to staging or production.
+        * ``high``: production needs ``approved_by`` with two people other than the promoter, and
+          a risk review not past ``review_by`` (an ISO date)."""
+        if level not in RISK_LEVELS:
+            raise ValueError(f"risk level must be one of {RISK_LEVELS}")
+        if review_by is not None:
+            import datetime as _dt
+            _dt.date.fromisoformat(review_by)
+        with self._lock(name):
+            gov = self.governance(name)
+            gov.update(risk=level, risk_reason=reason, owner=owner or gov.get("owner"), review_by=review_by,
+                       risk_set_by=user(), risk_set_at=now())
+            write_json(self._dir(name) / "governance.json", gov)
+            append_jsonl(self._dir(name) / "history.jsonl", {"time": now(), "user": user(), "version": None,
+                                                             "from": None, "to": None,
+                                                             "reason": f"risk set to {level}: {reason}"})
+        return gov
+
+    def retire(self, name: str, *, reason: str, replacement: str | None = None) -> dict:
+        """Retire the whole model: every version is archived, loading and promotion are refused,
+        and users are pointed at ``replacement``."""
+        self.get(name)                                  # raises if unknown
+        for v in self._versions(name):
+            if v.stage != "archived":
+                self.promote(name, v.version, "archived", reason=f"retired: {reason}")
+        with self._lock(name):
+            gov = self.governance(name)
+            gov["retired"] = {"at": now(), "by": user(), "reason": reason, "replacement": replacement}
+            write_json(self._dir(name) / "governance.json", gov)
+        return gov
+
+    def _governance_failures(self, name: str, stage: str, approved_by) -> list:
+        gov = self.governance(name)
+        if gov.get("retired") and stage != "archived":
+            return [f"{name} is retired ({gov['retired']['reason']})"]
+        risk = gov.get("risk")
+        if risk == "unacceptable" and stage in ("staging", "production"):
+            return [f"{name} is classified as unacceptable risk ({gov.get('risk_reason')})"]
+        failures = []
+        if risk == "high" and stage == "production":
+            approvers = sorted(set(approved_by or []) - {user()})
+            if len(approvers) < 2:
+                failures.append(f"high-risk model: production needs two approvers other than {user()} "
+                                f"(approved_by={approvers})")
+            if gov.get("review_by"):
+                import datetime as _dt
+                if _dt.date.fromisoformat(gov["review_by"]) < _dt.date.today():
+                    failures.append(f"risk review was due on {gov['review_by']}")
+        return failures
 
     def history(self, name: str) -> pl.DataFrame:
         rows = read_jsonl(self._dir(name) / "history.jsonl")
@@ -230,17 +304,19 @@ class ModelRegistry:
 
     def promote(self, name: str, version: int, stage: str, *, reason: str | None = None,
                 require: dict | None = None, archive_existing: bool = True,
-                must_beat_production: str | None = None) -> ModelVersion:
+                must_beat_production: str | None = None, approved_by: list | None = None) -> ModelVersion:
         """Move a version to ``stage``. Moving to production archives the current production
         version (``archive_existing``). ``require`` sets metric thresholds, and
         ``must_beat_production="test_roc_auc"`` requires the candidate to be at least as good as
         the current production model on that metric (use a ``-`` prefix, e.g. ``"-test_rmse"``,
-        for lower-is-better). Failing checks raise ``PromotionError`` and nothing changes."""
+        for lower-is-better). ``approved_by``: the people who approved this change (a high-risk
+        model needs two, see :meth:`set_risk`). Failing checks raise ``PromotionError`` and
+        nothing changes."""
         if stage not in STAGES:
             raise ValueError(f"stage must be one of {STAGES}")
         with self._lock(name):
             v = self.get(name, version)
-            failures = self.check(name, version, require or {})
+            failures = self._governance_failures(name, stage, approved_by) + self.check(name, version, require or {})
             if must_beat_production and stage == "production":
                 metric = must_beat_production.lstrip("-")
                 lower = must_beat_production.startswith("-")

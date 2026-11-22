@@ -697,6 +697,7 @@ model = acm.load_automl("models:/churn@production")             # back to an Aut
 
 Models are logged as MLflow **pyfunc** models with a signature and an input example, so all of
 MLflow works on them:
+
 ```
 mlflow.pyfunc.load_model("models:/churn/1").predict(pandas_df)
 mlflow models serve -m models:/churn@production --env-manager local

@@ -1,12 +1,13 @@
-# Monitoring: API reference
+# Monitoring & incidents: API reference
 
-Generated from the source docstrings. For a task-oriented introduction, read the [Monitoring guide](../guide/monitoring.md).
+Generated from the source docstrings. For a task-oriented introduction, read the [Monitoring & incidents guide](../guide/monitoring.md).
 
 **On this page:**
 
 - [`mlpilot.monitoring`](#mlpilotmonitoring)
 - [`mlpilot.monitoring.drift`](#mlpilotmonitoringdrift): `psi`, `js_distance`, `severity_of`, `ColumnBaseline`, `fit_column`, `Baseline`, `compare_column`, `DriftReport`, `compare`, `drift_report`
 - [`mlpilot.monitoring.estimate`](#mlpilotmonitoringestimate): `PerformanceEstimator`, `domain_classifier_drift`
+- [`mlpilot.monitoring.incidents`](#mlpilotmonitoringincidents): `Action`, `Diagnosis`, `diagnose`, `Incident`, `IncidentLog`
 - [`mlpilot.monitoring.monitor`](#mlpilotmonitoringmonitor): `RetrainPolicy`, `Alert`, `MonitorReport`, `webhook_alert`, `Monitor`, `read_prediction_log`, `RetrainResult`, `retrain`, `retrain_if_needed`
 - [`mlpilot.monitoring.ops`](#mlpilotmonitoringops): `pagerduty_alert`, `opsgenie_alert`, `join_labels`, `join_feedback`, `sql_sink`
 
@@ -27,6 +28,9 @@ Monitoring (module 9): data & prediction drift, accuracy decay, alerts, retraini
 * `PerformanceEstimator(model)`           accuracy / ROC AUC / MAE estimated *without labels*
   (Monitor.check uses it when a batch has no labels).
 * `domain_classifier_drift(ref, cur)`     multivariate drift: can a model tell the two apart?
+* `diagnose(...)` / `IncidentLog`       root cause (upstream data, infrastructure, bad release,
+  concept drift, covariate shift), playbooks, approvals,
+  verified recovery.
 
 ---
 
@@ -217,9 +221,7 @@ These estimators warn about a model getting worse in the meantime:
 ```python
 est = PerformanceEstimator(model).fit(reference_with_labels)     # held-out data with labels
 est.estimate(todays_batch)                                       # no labels needed
-```
 {'metric': 'accuracy', 'estimated': 0.81, 'reference': 0.90, 'low': 0.79, 'high': 0.83, ...}
-```python
 domain_classifier_drift(reference, todays_batch)                 # multivariate drift
 ```
 
@@ -286,6 +288,172 @@ def domain_classifier_drift(reference, current, *, columns: list | None=None, cv
 Train a classifier to separate reference rows from current rows (cross-validated).
 Returns `{"auc", "drift": bool, "top_features": [(column, importance)...]}`; AUC above
 ~0.55-0.6 means the two samples are distinguishable, i.e. the joint distribution moved.
+
+---
+
+## `mlpilot.monitoring.incidents`
+
+<sub>Source: [`mlpilot/monitoring/incidents.py`](https://github.com/DataSpoof/dataspoof-mlpilot/blob/main/mlpilot/monitoring/incidents.py)</sub>
+
+Incident management: diagnose a production problem, choose a playbook, act safely, verify recovery.
+
+```python
+diag = diagnose(monitor=monitor.check(batch), data=data_monitor.observe(batch),
+                service={"latency_ms_p95": 180, "error_rate": 0.002}, slo={"latency_ms_p95": 100})
+print(diag.summary())          # root cause, confidence, evidence, recommended actions
+log = IncidentLog("incidents.jsonl")
+inc = log.open(diag, model="churn")
+log.remediate(inc, handlers={"retrain": start_retrain_run, "notify": page_on_call})
+log.approve(inc, "rollback", by="priya")          # high-risk actions wait for a person
+log.verify(inc, monitor.check(next_batch))        # resolved only when the next check is healthy
+```
+
+**Root causes**, checked in this order, because the first one that fits decides the playbook:
+
+| Cause | Evidence | Playbook |
+|---|---|---|
+| `upstream_data` | stale data, missing or retyped columns, a volume collapse, null spikes | pause retraining, notify the data owner |
+| `infrastructure` | latency or error-rate SLO breached, model and data look normal | scale out (automatic), restart workers |
+| `bad_release` | performance fell right after a new version went live | roll back (needs approval) |
+| `concept_drift` | measured accuracy fell, inputs did not shift | retrain on recent labelled data |
+| `covariate_shift` | inputs and predictions shifted (with or without labels) | retrain; review features |
+
+**Safety rules:**
+- Low-risk actions (notify, pause, scale, start a retraining *run*) can run automatically.
+- High-risk actions (rollback, promoting a retrained model) need an approver.
+- Retraining never means automatic promotion: a retrained model goes through the same gates as
+  any other.
+- An incident closes only when a later check is healthy.
+
+### class `Action`
+
+```python
+class Action:
+```
+
+| Field | Type | Default |
+|---|---|---|
+| `name` | `str` | required |
+| `risk` | `str` | required |
+| `reason` | `str` | required |
+| `status` | `str` | `'proposed'` |
+| `result` | `str \| None` | `None` |
+| `approved_by` | `list` | `list()` |
+
+### class `Diagnosis`
+
+```python
+class Diagnosis:
+```
+
+| Field | Type | Default |
+|---|---|---|
+| `cause` | `str` | required |
+| `confidence` | `str` | required |
+| `evidence` | `list` | required |
+| `actions` | `list` | required |
+
+#### `Diagnosis.healthy` *(property)*
+
+```python
+healthy: bool
+```
+
+#### `Diagnosis.summary()`
+
+```python
+summary() -> str
+```
+
+### `diagnose()`
+
+```python
+def diagnose(monitor=None, data=None, service: dict | None=None, slo: dict | None=None, *, released_hours_ago: float | None=None, release_window_hours: float=48.0) -> Diagnosis
+```
+
+Find the most likely root cause from the signals you have (any may be missing).
+
+`monitor`: a `MonitorReport` (or its `to_dict()`). `data`: a `DataMonitor`
+`ObservationReport`. `service`: current service metrics (`latency_ms_p95`,
+`error_rate`, `availability`). `slo`: limits for those metrics (availability is a
+floor). `released_hours_ago`: how long the current model version has been live.
+
+### class `Incident`
+
+```python
+class Incident:
+```
+
+| Field | Type | Default |
+|---|---|---|
+| `id` | `str` | required |
+| `model` | `str \| None` | required |
+| `opened` | `str` | required |
+| `cause` | `str` | required |
+| `confidence` | `str` | required |
+| `evidence` | `list` | required |
+| `actions` | `list` | required |
+| `status` | `str` | `'open'` |
+| `resolved` | `str \| None` | `None` |
+| `history` | `list` | `list()` |
+
+### class `IncidentLog`
+
+```python
+class IncidentLog:
+```
+
+Incidents and everything done about them, in an append-only JSONL file (the latest record
+of an incident wins).
+
+**Constructor**
+
+```python
+IncidentLog(path='incidents.jsonl', *, registry=None)
+```
+
+#### `IncidentLog.get()`
+
+```python
+get(incident_id: str) -> Incident
+```
+
+#### `IncidentLog.incidents()`
+
+```python
+incidents(status: str | None=None) -> list
+```
+
+#### `IncidentLog.open()`
+
+```python
+open(diagnosis: Diagnosis, *, model: str | None=None) -> Incident
+```
+
+#### `IncidentLog.remediate()`
+
+```python
+remediate(inc: Incident, handlers: dict | None=None) -> Incident
+```
+
+Run the incident's actions. `handlers` maps action names to `fn(incident) -> str`.
+Low-risk actions run now; high-risk ones run only once approved (`approve`).
+
+#### `IncidentLog.approve()`
+
+```python
+approve(inc: Incident, action: str, *, by: str, handlers: dict | None=None) -> Incident
+```
+
+Approve a high-risk action and run it.
+
+#### `IncidentLog.verify()`
+
+```python
+verify(inc: Incident, monitor=None, data=None, service=None, slo=None) -> Incident
+```
+
+Close the incident when a fresh check is healthy; otherwise keep it open with the new evidence.
 
 ---
 

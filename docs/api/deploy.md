@@ -11,7 +11,7 @@ Generated from the source docstrings. For a task-oriented introduction, read the
 - [`mlpilot.deploy.export`](#mlpilotdeployexport): `export_model`, `load_skops`, `load_pickle`, `onnx_inputs`, `build_docker`
 - [`mlpilot.deploy.quantize`](#mlpilotdeployquantize): `quantizable_weights`, `quantize_onnx`, `QuantizedVariant`, `QuantizationReport`, `quantize_model`
 - [`mlpilot.deploy.scoring`](#mlpilotdeployscoring): `resolve_model`, `expected_columns`, `model_inputs`, `score`, `batch_score`, `to_records`
-- [`mlpilot.deploy.server`](#mlpilotdeployserver): `Metrics`, `make_app`, `app_from_registry`, `make_asgi_app`, `serve`
+- [`mlpilot.deploy.server`](#mlpilotdeployserver): `RateLimiter`, `validate_records`, `Metrics`, `make_app`, `app_from_registry`, `make_asgi_app`, `serve`
 - [`mlpilot.deploy.wsgi`](#mlpilotdeploywsgi): `build_app`
 
 ---
@@ -39,7 +39,7 @@ Deployment (module 8): scoring, a REST API, batch jobs, exports and Docker image
 <sub>Source: [`mlpilot/deploy/asgi.py`](https://github.com/DataSpoof/dataspoof-mlpilot/blob/main/mlpilot/deploy/asgi.py)</sub>
 
 ASGI entry point: `uvicorn mlpilot.deploy.asgi:app` (same environment variables
-as `wsgi`).
+as `mlpilot.deploy.wsgi`).
 
 ---
 
@@ -106,7 +106,8 @@ Score records through the endpoint (the same JSON contract as the REST API).
 <sub>Source: [`mlpilot/deploy/cli.py`](https://github.com/DataSpoof/dataspoof-mlpilot/blob/main/mlpilot/deploy/cli.py)</sub>
 
 Command line: `mlpilot serve | score | docker | export | monitor | hub` and the
-model CI/CD steps `train | gate | register | promote | release | latest | deploy-sagemaker | cicd init`.
+model CI/CD steps `train | gate | register | promote | release | latest | deploy-sagemaker | cicd init`, and
+the autonomous engine `plan | run | approve | status`.
 
 Also available as `python -m mlpilot.deploy ...`.
 
@@ -209,11 +210,9 @@ Model quantization: smaller ONNX models with 8-bit or 16-bit weights, measured b
 ```python
 rep = quantize_model(model, test_df, out="build/quantized")     # AutoML model + held-out rows
 print(rep.summary())
-```
 fp32   155.3 KB  1.00x  roc_auc 0.9412           agreement 100.00%
 int8    43.6 KB  3.56x  roc_auc 0.9405 (-0.0007)  agreement  99.70%   <- recommended
 fp16    78.9 KB  1.97x  roc_auc 0.9412 (-0.0000)  agreement 100.00%
-```python
 rep.recommended.path                                           # build/quantized/model.int8.onnx
 quantize_onnx("my_model.onnx", "my_model.int8.onnx")           # any ONNX model (vision, NLP, ...)
 ```
@@ -428,6 +427,7 @@ Run it with `serve(model)` for development, or any WSGI server in production —
 is what the generated Docker image does. `make_asgi_app` wraps it for uvicorn/hypercorn.
 
 Endpoints:
+
 ```
 GET  /health  /ping           liveness: {"status": "ok"}
 GET  /metadata                model name, task, target, classes, expected input columns, version
@@ -442,8 +442,8 @@ POST /score                   same, Azure ML convention
 $AIP_PREDICT_ROUTE / $AIP_HEALTH_ROUTE   Google Vertex AI routes (payload {"instances": [...]})
 ```
 
-Responses: `{"predictions": [...], "probabilities": [{class: p}], "prediction_ids": [...],
-"variant": "primary", ...}`. Send outcomes back with `POST /feedback` and the prediction id:
+Responses: ``{"predictions": [...], "probabilities": [{class: p}], "prediction_ids": [...],
+"variant": "primary", ...}`. Send outcomes back with `POST /feedback`` and the prediction id:
 they are logged (`feedback_log`), matched to the prediction, and counted as live accuracy.
 
 Hot reload: `app_from_registry(..., watch=30)` follows promotions in the registry, and
@@ -456,6 +456,37 @@ background and logs its output (and agreement) without affecting responses.
 Security: set `api_key` (or the `AC_API_KEY` env var) to require an `X-API-Key` header
 (compared in constant time). Bodies over `max_body_bytes` and requests over `max_rows` are
 rejected. Internal errors return a generic message; details go to the server log.
+
+### class `RateLimiter`
+
+```python
+class RateLimiter:
+```
+
+Token bucket per client: `"120/minute"` allows bursts of 120 and refills 2 per second.
+
+**Constructor**
+
+```python
+RateLimiter(spec: str, max_clients: int=10000)
+```
+
+#### `RateLimiter.check()`
+
+```python
+check(client: str, now: float | None=None) -> float
+```
+
+0 when allowed, otherwise the seconds to wait.
+
+### `validate_records()`
+
+```python
+def validate_records(records: list, schema: dict, columns: list) -> list
+```
+
+Problems with `records` for a model trained on `schema` ({column: dtype}): required
+columns missing from a record, and non-numeric values in numeric columns.
 
 ### class `Metrics`
 
@@ -519,7 +550,7 @@ render() -> str
 ### `make_app()`
 
 ```python
-def make_app(model, *, api_key: str | None=None, name: str | None=None, version=None, max_rows: int=10000, max_body_bytes: int=10 * 1024 * 1024, prediction_log=None, canary=None, shadow=None, tracing: bool=False, public_metrics: bool=True, feedback_log=None, monitor=None, drift_window: int=2000, drift_every: int=500, reloader: Callable | None=None, watch: float | None=None, recent_predictions: int=100000)
+def make_app(model, *, api_key: str | None=None, name: str | None=None, version=None, max_rows: int=10000, max_body_bytes: int=10 * 1024 * 1024, prediction_log=None, canary=None, shadow=None, tracing: bool=False, public_metrics: bool=True, feedback_log=None, monitor=None, drift_window: int=2000, drift_every: int=500, reloader: Callable | None=None, watch: float | None=None, recent_predictions: int=100000, rate_limit: str | None=None, trust_proxy: bool=False, validate: str='warn')
 ```
 
 Build the WSGI application for `model` (an object or a saved-model path).
@@ -536,9 +567,15 @@ Build the WSGI application for `model` (an object or a saved-model path).
   (drift share, per-feature PSI, prediction PSI, estimated performance, active alerts) are
   exported as Prometheus gauges.
 * `watch=seconds`: hot reload. With a model *path*, a replaced model at that path is picked
-  up; with `reloader` (see `app_from_registry`), whatever it returns. `POST
-  /admin/reload` (needs the API key) reloads immediately. In-flight requests finish on the
+  up; with `reloader` (see `app_from_registry`), whatever it returns. ``POST
+  /admin/reload`` (needs the API key) reloads immediately. In-flight requests finish on the
   old model; the swap is atomic.
+* `rate_limit="120/minute"`: per-client token bucket (client = hashed API key, else the
+  address; `trust_proxy=True` uses the first `X-Forwarded-For` address). Excess requests
+  get `429` with `Retry-After`.
+* `validate`: `"strict"` rejects records with missing input columns or non-numeric values
+  in numeric columns (`422`); `"warn"` (default) scores them and lists the problems in
+  the response's `warnings`; `"off"` skips the check.
 
 ### `app_from_registry()`
 
@@ -592,6 +629,9 @@ Configured by environment variables:
 * `AC_FEEDBACK_LOG`      JSONL file for POST /feedback (default: next to the prediction log)
 * `AC_MONITOR_PATH`      a saved Monitor: live drift + estimated performance as Prometheus gauges
 * `AC_WATCH_SECONDS`     hot reload: re-check the model (or the registry) every N seconds
+* `AC_RATE_LIMIT`        per-client limit, e.g. `120/minute` (429 + Retry-After beyond it)
+* `AC_TRUST_PROXY=1`     identify clients by the first X-Forwarded-For address (behind a proxy)
+* `AC_VALIDATE`          `strict` (reject bad records with 422), `warn` (default) or `off`
 * `AC_REGISTRY` + `AC_MODEL_NAME`   serve the registry's production model instead of
   `AC_MODEL_PATH` (with AC_WATCH_SECONDS, promotions go live by themselves)
 

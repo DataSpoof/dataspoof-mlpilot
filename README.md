@@ -12,10 +12,10 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Rust engine](https://img.shields.io/badge/engine-Rust-B7410E?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Polars](https://img.shields.io/badge/dataframes-Polars-CD792C?logo=polars&logoColor=white)](https://pola.rs/)
-[![Tests](https://img.shields.io/badge/tests-323%20passing-2ea44f)](#%EF%B8%8F-building--contributing)
+[![Tests](https://img.shields.io/badge/tests-372%20passing-2ea44f)](#%EF%B8%8F-building--contributing)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f)](#-license)
 
-**[What's new](#-whats-new-in-220)** ·
+**[What's new](#-whats-new-in-230)** ·
 **[Install](#-installation)** ·
 **[Quick start](#-quick-start)** ·
 **[Docs](#-documentation)** ·
@@ -34,7 +34,26 @@ handles the heavy computation, and every stage shares one `fit` / `transform` / 
 
 > **AutomatedCleaning is now MLPilot.** Install `dataspoof-mlpilot` and `import mlpilot`. Existing code and saved models keep working: see [Moving from AutomatedCleaning](#moving-from-automatedcleaning).
 
-## ✨ What's new in 2.2.0
+## ✨ What's new in 2.3.0
+
+- **Autonomous execution engine** ([guide](docs/guide/enterprise-operations.md)):
+  - describe the goal in YAML or plain English;
+  - MLPilot plans and runs the gated workflow, waits for approvals, resumes after crashes, and
+    records every step's log and cost;
+  - cost-aware AutoML finds the best model within your latency and size limits.
+- **Enterprise operations:**
+  - data observability and reconciliation;
+  - incident diagnosis with playbooks;
+  - backups and DR drills;
+  - model-file scanning and SBOMs;
+  - rate limits and request validation;
+  - model risk levels and retirement;
+  - active learning;
+  - privacy-attack tests;
+  - Hub tenants with quotas.
+- **Walkthrough:** [examples/enterprise_walkthrough.ipynb](examples/enterprise_walkthrough.ipynb).
+
+### Earlier in 2.2.0
 
 - **Images taken in hard conditions** ([guide](docs/guide/vision.md)):
   - detect, simulate and remove fog, rain, snow, low light, glare, blur, noise and JPEG damage;
@@ -115,6 +134,8 @@ and builds an EDA dashboard.
 | 🧾 | **Lineage & catalogs** | `lineage`, `integrations` | OpenLineage events (Marquez, DataHub…), AWS Glue Data Catalog, Glue jobs and Azure Data Factory runs. |
 | ☁️ | **Deploy on AWS** | `deploy.aws` | ECR push, blue/green SageMaker endpoints, Terraform for SageMaker and ECS Fargate. |
 | 🔌 | **Integrations & scale** | `integrations`, `scale` | MLflow, DVC, Feast, Airflow, Prefect, Dagster, Kafka; Spark, Ray and Dask scoring; SQL pushdown into the warehouse. |
+| 🧠 | **Autonomous engine** | `orchestration` | A goal in YAML or plain English becomes a gated, resumable workflow: data checks → AutoML within latency and size limits → fairness, robustness, privacy and security gates → approval → registry → monitoring. Every step logged and costed. |
+| 🏭 | **Enterprise operations** | `backup`, `labeling`, `supply_chain`, `model_privacy` | Data observability and reconciliation, incident diagnosis with playbooks, backups and DR drills, model-file scanning and SBOMs, active learning, privacy-attack tests, risk classification and retirement, Hub tenants with quotas. |
 
 ```
    ingest ─▶ clean ─▶ profile & quality ─▶ features ─▶ AutoML ─▶ evaluate & explain
@@ -199,6 +220,7 @@ Read lane 1 left to right, lane 2 right to left, and so on: the flow snakes down
 26. [Deploy on AWS](#%EF%B8%8F-26--deploy-on-aws)
 
 27. [Quantization & compression](#%EF%B8%8F-27--quantization--compression)
+28. [Autonomous engine & enterprise operations](#-28--autonomous-engine--enterprise-operations)
 
 Also: [Installation](#-installation) · [Documentation](#-documentation) · [Why Rust + Python?](#-why-rust--python) ·
 [Requirements](#-requirements) · [Building & contributing](#%EF%B8%8F-building--contributing) ·
@@ -211,11 +233,11 @@ Also: [Installation](#-installation) · [Documentation](#-documentation) · [Why
 | | |
 |---|---|
 | 🚀 [Installation](docs/installation.md) | extras, platforms, moving from AutomatedCleaning |
-| 📘 User guide | [Ingestion & connectors](docs/guide/ingestion.md) · [Data cleaning](docs/guide/cleaning.md) · [Profiling & data quality](docs/guide/quality.md) · [Data splitting](docs/guide/splitting.md) · [Feature engineering](docs/guide/features.md) · [Feature store](docs/guide/feature-store.md) · [Data versioning](docs/guide/versioning.md) · [Statistical testing](docs/guide/stats.md) · [AutoML](docs/guide/automl.md) · [Evaluation & explainability](docs/guide/evaluation.md) · [Model security](docs/guide/model-security.md) · [Tracking & registry](docs/guide/registry.md) · [Environments & CI/CD](docs/guide/environments-cicd.md) · [Deployment](docs/guide/deployment.md) · [Deploy on AWS](docs/guide/aws.md) · [Quantization & compression](docs/guide/quantization.md) · [Monitoring](docs/guide/monitoring.md) · [Observability](docs/guide/observability.md) · [Insights & reporting](docs/guide/insights.md) · [Hub (platform server)](docs/guide/hub.md) · [Secrets & policy](docs/guide/secrets-policy.md) · [Lineage & catalogs](docs/guide/lineage.md) · [Forecasting](docs/guide/forecasting.md) · [Causal & uplift](docs/guide/causal.md) · [Anomaly detection](docs/guide/anomaly.md) · [Image & audio data](docs/guide/media.md) · [Weather, faces & plates](docs/guide/vision.md) · [Integrations & scale](docs/guide/integrations.md) |
+| 📘 User guide | [Ingestion & connectors](docs/guide/ingestion.md) · [Data cleaning](docs/guide/cleaning.md) · [Profiling & data quality](docs/guide/quality.md) · [Data splitting](docs/guide/splitting.md) · [Feature engineering](docs/guide/features.md) · [Feature store](docs/guide/feature-store.md) · [Data versioning](docs/guide/versioning.md) · [Statistical testing](docs/guide/stats.md) · [AutoML](docs/guide/automl.md) · [Evaluation & explainability](docs/guide/evaluation.md) · [Model security](docs/guide/model-security.md) · [Tracking & registry](docs/guide/registry.md) · [Environments & CI/CD](docs/guide/environments-cicd.md) · [Deployment](docs/guide/deployment.md) · [Deploy on AWS](docs/guide/aws.md) · [Quantization & compression](docs/guide/quantization.md) · [Autonomous engine & operations](docs/guide/enterprise-operations.md) · [Monitoring](docs/guide/monitoring.md) · [Observability](docs/guide/observability.md) · [Insights & reporting](docs/guide/insights.md) · [Hub (platform server)](docs/guide/hub.md) · [Secrets & policy](docs/guide/secrets-policy.md) · [Lineage & catalogs](docs/guide/lineage.md) · [Forecasting](docs/guide/forecasting.md) · [Causal & uplift](docs/guide/causal.md) · [Anomaly detection](docs/guide/anomaly.md) · [Image & audio data](docs/guide/media.md) · [Weather, faces & plates](docs/guide/vision.md) · [Integrations & scale](docs/guide/integrations.md) |
 | 🔎 [API reference](docs/api/README.md) | every public class and function, generated from the source |
-| 📓 [Titanic walkthrough](examples/titanic_walkthrough.ipynb) | every stage, end to end, on one dataset |
+| 📓 [Titanic walkthrough](examples/titanic_walkthrough.ipynb) · [Enterprise walkthrough](examples/enterprise_walkthrough.ipynb) | every stage, end to end, on one dataset; the autonomous engine and every operations feature |
 | 🧭 [Workflow](docs/workflow.md) · [Architecture](docs/architecture.md) | how the stages connect; the Python frontend and the Rust engine |
-| 📝 [Changelog](CHANGELOG.md) · [Policies](docs/policies.md) · [Security](SECURITY.md) | releases, versioning and support, reporting vulnerabilities |
+| 📝 [Changelog](CHANGELOG.md) · [Policies](docs/policies.md) · [Security](SECURITY.md) · [Enterprise gap audit](docs/enterprise-gap-audit.md) | releases, versioning and support, reporting vulnerabilities, what is built and what is left |
 
 <p align="right"><a href="#top">back to top ↑</a></p>
 
@@ -1691,6 +1713,48 @@ small, report = ac.optimize_dtypes(df)                       # smaller column ty
     and large balances keep their cents.
 
 Details and measurements: [quantization guide](docs/guide/quantization.md).
+
+<p align="right"><a href="#top">back to top ↑</a></p>
+
+---
+
+## 🧠 28 · Autonomous engine & enterprise operations
+
+```python
+from mlpilot import orchestration as orc
+
+goal = orc.goal_from_text("Predict churned from customers.csv with AUC above 0.85, latency below 50 ms; "
+                          "check fairness across gender; deploy to production")
+res = orc.run(goal, "runs/churn")                  # gated, resumable; stops for the production approval
+orc.approve("runs/churn", "promote", by="priya")   # four-eyes: never the requester
+orc.resume("runs/churn")
+```
+
+```bash
+mlpilot run --text "predict churned from customers.csv with AUC above 0.85" --out runs/churn
+mlpilot scan-model models/churn          # code that would run on load? exit 1
+mlpilot backup --source registry=registry --sqlite hub=hub.db --out backups
+mlpilot dr-drill --source registry=registry --workdir dr --rto-limit 120
+mlpilot sbom --out sbom.cdx.json
+```
+
+- **The engine:**
+  - plans only with registered tools, and the LLM only drafts goals;
+  - gates are deterministic and promotions need other people;
+  - each step's inputs are hashed, so re-runs are cheap and killed runs resume;
+  - every step's log, cost and reproducibility record lands in the run directory.
+- **Operations:**
+  - data observability (`DataMonitor`) and reconciliation;
+  - incident diagnosis and playbooks (`monitoring.diagnose`, `IncidentLog`);
+  - backups and DR drills;
+  - per-client rate limits and request validation;
+  - model risk levels and retirement;
+  - active learning;
+  - membership-inference and model-extraction tests;
+  - Hub tenants with quotas and metering.
+
+Details: [Autonomous engine & operations guide](docs/guide/enterprise-operations.md) ·
+[enterprise gap audit](docs/enterprise-gap-audit.md) (what is built, what is still missing).
 
 <p align="right"><a href="#top">back to top ↑</a></p>
 

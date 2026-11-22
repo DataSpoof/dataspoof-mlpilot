@@ -25,10 +25,34 @@ class Base(DeclarativeBase):
     pass
 
 
+QUOTA_KEYS = ("max_workspaces", "max_model_versions", "max_storage_bytes", "max_runs_per_day")
+
+
+class Organization(Base):
+    """A tenant: owns workspaces and users; quotas bound what it may use."""
+    __tablename__ = "organizations"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    quotas: Mapped[dict] = mapped_column(JSON, default=dict)                   # keys from QUOTA_KEYS
+    created_at: Mapped[_dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Usage(Base):
+    """Metered usage per organisation and day (api_calls, runs, model_versions, storage_bytes)."""
+    __tablename__ = "usage"
+    __table_args__ = (UniqueConstraint("org_id", "day", "kind"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(String(32), index=True)
+    day: Mapped[str] = mapped_column(String(10))                               # YYYY-MM-DD (UTC)
+    kind: Mapped[str] = mapped_column(String(40))
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(100), unique=True)
+    org_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)   # tenant (None: platform)
     require_approval: Mapped[bool] = mapped_column(Boolean, default=True)      # four-eyes for production
     # promotion gates checked server-side, e.g. {"min_metrics": {"test_roc_auc": 0.8}, "require_signed": true}
     policy: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -43,6 +67,7 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)            # platform admin
     is_service: Mapped[bool] = mapped_column(Boolean, default=False)          # service account
+    org_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)   # tenant (None: any)
     created_at: Mapped[_dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -103,6 +128,7 @@ class ModelVersion(Base):
     artifact_sha256: Mapped[str] = mapped_column(String(64))
     model_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     signed: Mapped[bool] = mapped_column(Boolean, default=False)
+    artifact_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[_dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -164,8 +190,30 @@ def make_engine(url: str):
     return engine
 
 
+_ADDED_COLUMNS = {   # columns added after 2.2: created in place on existing databases
+    "workspaces": {"org_id": "VARCHAR(32)"},
+    "users": {"org_id": "VARCHAR(32)"},
+    "model_versions": {"artifact_bytes": "INTEGER"},
+}
+
+
+def _migrate(engine):
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table, cols in _ADDED_COLUMNS.items():
+            if not insp.has_table(table):
+                continue
+            have = {c["name"] for c in insp.get_columns(table)}
+            for col, ddl in cols.items():
+                if col not in have:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+
+
 def init_db(url: str):
-    """Create tables (idempotent) and return a session factory."""
+    """Create tables (idempotent), add columns introduced since the database was created, and
+    return a session factory."""
     engine = make_engine(url)
     Base.metadata.create_all(engine)
+    _migrate(engine)
     return sessionmaker(engine, expire_on_commit=False)

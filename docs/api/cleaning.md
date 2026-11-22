@@ -21,6 +21,7 @@ those rules in `transform`. Cleaning a test set or a production batch therefore 
 learns from that batch, and a saved pipeline reproduces training-time cleaning exactly.
 
 Quick start:
+
 ```
 pipe = ac.default_cleaning_pipeline()
 train_clean = pipe.fit_transform(train_df)
@@ -277,7 +278,7 @@ Parameters:
 -----------
 df : pl.DataFrame
     The input Polars DataFrame to analyze
-
+    
 Returns:
 --------
 tuple:
@@ -449,7 +450,7 @@ Parameters:
 
 Returns:
     pl.DataFrame: The DataFrame after removing low-cardinality columns.
-  dict: A dictionary with column names as keys and their cardinality as values.
+    dict: A dictionary with column names as keys and their cardinality as values.
 
 ### `save_cleaned_data()`
 
@@ -505,7 +506,7 @@ Detects and masks PII in a Polars DataFrame.
 
 Args:
     df (pl.DataFrame): Input Polars DataFrame.
-  sample_size (int): Number of rows to sample for PII detection.
+    sample_size (int): Number of rows to sample for PII detection.
 
 Returns:
     pl.DataFrame: DataFrame with masked PII columns added.

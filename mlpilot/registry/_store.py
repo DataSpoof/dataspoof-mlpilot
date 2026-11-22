@@ -23,6 +23,9 @@ def now() -> str:
 
 
 def user() -> str:
+    """Who is acting: ``AC_USER`` (CI jobs and services set their identity here), else the OS user."""
+    if os.environ.get("AC_USER"):
+        return os.environ["AC_USER"]
     try:
         return getpass.getuser()
     except Exception:

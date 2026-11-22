@@ -70,7 +70,7 @@ Automatic model selection, tuning and ensembling for one target column.
    `default_cleaning_pipeline` + `default_feature_pipeline`), or yours, or none;
 4. cross-validates a baseline and every candidate model with sensible defaults, then
    spends the rest of `time_budget` on random hyperparameter search around the best
-  model families (stratified K-fold; time-ordered splits for time series);
+   model families (stratified K-fold; time-ordered splits for time series);
 5. tries a soft-voting ensemble of the best three model families;
 6. refits the winner on all training rows.
 

@@ -5,9 +5,9 @@ Generated from the source docstrings. For a task-oriented introduction, read the
 **On this page:**
 
 - [`mlpilot.hub`](#mlpilothub)
-- [`mlpilot.hub.app`](#mlpilothubapp): `WorkspaceIn`, `MemberIn`, `TokenIn`, `ServiceAccountIn`, `RunIn`, `RunUpdate`, `TransitionIn`, `DecisionIn`, `MonitorIn`, `create_app`, `bootstrap_admin`
+- [`mlpilot.hub.app`](#mlpilothubapp): `WorkspaceIn`, `OrgIn`, `QuotaIn`, `OrgUserIn`, `MemberIn`, `TokenIn`, `ServiceAccountIn`, `RunIn`, `RunUpdate`, `TransitionIn`, `DecisionIn`, `MonitorIn`, `create_app`, `bootstrap_admin`
 - [`mlpilot.hub.client`](#mlpilothubclient): `HubError`, `HubClient`
-- [`mlpilot.hub.db`](#mlpilothubdb): `utcnow`, `new_id`, `Base`, `Workspace`, `User`, `Membership`, `ApiToken`, `Run`, `ModelVersion`, `PromotionRequest`, `MonitorResult`, `AuditEntry`, `make_engine`, `init_db`
+- [`mlpilot.hub.db`](#mlpilothubdb): `utcnow`, `new_id`, `Base`, `Organization`, `Usage`, `Workspace`, `User`, `Membership`, `ApiToken`, `Run`, `ModelVersion`, `PromotionRequest`, `MonitorResult`, `AuditEntry` …
 - [`mlpilot.hub.policy`](#mlpilothubpolicy): `PolicyUnavailable`, `OPAPolicy`
 - [`mlpilot.hub.security`](#mlpilothubsecurity): `AuthError`, `hash_token`, `create_token`, `user_from_api_token`, `OIDCVerifier`, `user_from_claims`, `role_in`, `require_role`, `audit`, `verify_audit_chain`
 - [`mlpilot.hub.storage`](#mlpilothubstorage): `tar_directory`, `untar_to`, `sha256`, `ArtifactStore`
@@ -57,6 +57,24 @@ API: `/api/...` (OpenAPI docs at `/docs`); web UI at `/`.
 
 ```python
 class WorkspaceIn(BaseModel):
+```
+
+### class `OrgIn`
+
+```python
+class OrgIn(BaseModel):
+```
+
+### class `QuotaIn`
+
+```python
+class QuotaIn(BaseModel):
+```
+
+### class `OrgUserIn`
+
+```python
+class OrgUserIn(BaseModel):
 ```
 
 ### class `MemberIn`
@@ -274,6 +292,22 @@ def new_id() -> str
 class Base(DeclarativeBase):
 ```
 
+### class `Organization`
+
+```python
+class Organization(Base):
+```
+
+A tenant: owns workspaces and users; quotas bound what it may use.
+
+### class `Usage`
+
+```python
+class Usage(Base):
+```
+
+Metered usage per organisation and day (api_calls, runs, model_versions, storage_bytes).
+
 ### class `Workspace`
 
 ```python
@@ -340,7 +374,8 @@ def make_engine(url: str)
 def init_db(url: str)
 ```
 
-Create tables (idempotent) and return a session factory.
+Create tables (idempotent), add columns introduced since the database was created, and
+return a session factory.
 
 ---
 

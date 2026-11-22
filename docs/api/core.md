@@ -183,7 +183,7 @@ verbose : show the steps' own printed output (otherwise it is captured in the re
 audit_log : optional path; every run appends one JSON line with its `RunReport`.
 target : optional label column. It is hidden from ordinary steps (so they can't impute,
     clip, encode or drop it), passed to target-aware steps, and kept aligned when rows are
-  removed. It may be absent when transforming new data for prediction.
+    removed. It may be absent when transforming new data for prediction.
 
 **Constructor**
 

@@ -61,6 +61,15 @@ def test_drop_columns_reasons_and_keep():
                        "constant": "constant", "value_copy": "duplicate of 'value'"}
 
 
+def test_free_text_is_not_dropped_as_an_id():
+    # every review is unique, like an ID column, but it is the feature a text model learns from
+    words = "battery screen fast slow delivery broken great price support refund camera sound".split()
+    reviews = [" ".join(words[(i + k) % len(words)] for k in range(8)) + f" order {i}" for i in range(40)]
+    df = pl.DataFrame({"review": reviews, "code": [f"A{i:04d}" for i in range(40)], "y": [i % 2 for i in range(40)]})
+    reasons = _fit(ac.DropColumns(), df).steps[0].state_["reasons"]
+    assert "review" not in reasons and reasons["code"] == "ID-like (100% unique)"
+
+
 def test_drop_collinear():
     df = pl.DataFrame({"a": [1.0, 2, 3, 4, 5], "b": [2.0, 4, 6, 8, 10], "c": [5.0, 3, 6, 1, 9]})
     pipe = _fit(ac.DropCollinear(threshold=0.95), df)

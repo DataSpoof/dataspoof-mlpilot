@@ -100,7 +100,7 @@ so `labels` stay aligned (`None` labels are passed through as `None`).
 def image_classifier(model, *, features: Callable | None=None, keep_path: bool=False, **feature_kwargs) -> Callable
 ```
 
-Wrap a model trained on `image_features` (an `AutoML` or anything with
+Wrap a model trained on `mlpilot.media.image_features` (an `AutoML` or anything with
 `predict(DataFrame)`) as `predict(images)`. Pass the same `feature_kwargs` used in training;
 the `path` column is dropped unless `keep_path=True`.
 
@@ -134,9 +134,7 @@ A model trained only on clear daylight images fails silently on the rest. This m
 ```python
 from mlpilot.media import conditions as cond
 cond.detect_conditions("camera_042.jpg")
-```
 ConditionResult(tags=['fog', 'low_light'], scores={'fog': 0.71, 'low_light': 0.64, ...})
-```python
 cond.condition_report("traffic_cams/")          # one row per image + coverage per condition
 foggy = cond.apply_condition(img, "fog", severity=4, seed=1)        # training augmentation
 clear = cond.enhance(foggy)                                         # dehaze / brighten / denoise
@@ -285,9 +283,7 @@ ship with OpenCV 4, so nothing is downloaded at run time).
 from mlpilot.media import faces
 found = faces.detect_faces(img)                    # FaceBox(x, y, w, h, eyes=[...])
 faces.face_occlusion(img)                          # how much of the face is covered, and by what
-```
 OcclusionResult(score=0.46, occluded=True, likely='hair', regions={'forehead': 0.9, 'eyes': 0.6, 'lower': 0.0})
-```python
 faces.occlusion_report("id_photos/")               # one row per image: faces, coverage, eyes visible
 faces.add_occluder(img, "hair", severity=4)        # training augmentation (hair, mask, sunglasses, cutout)
 faces.anonymize(img)                               # blur every face (and licence plate)
@@ -410,8 +406,8 @@ plates.detect_plates(img)                          # [Plate(box=(x, y, w, h), te
 plates.read_plate(img, box, enhance=True)          # dehaze / brighten / denoise first, then read
 plates.plate_report("traffic_cam/", pattern="IN")  # one row per image, with weather / light conditions
 plates.clean_plate_text("MH l2 AB I234", pattern="IN")
-```
 'MH12AB1234'
+```
 
 How plates are found: (1) OCR text boxes whose text looks like a plate (4-12 letters and digits,
 with both, or matching `pattern`); (2) OpenCV's plate detector; (3) bright, plate-shaped
@@ -470,7 +466,7 @@ def read_plate(image, box: tuple | None=None, *, pattern=None, enhance: bool=Fal
 OCR one plate (the whole image, or `box`). Returns `(text, confidence)`.
 
 `enhance=True` first removes haze / low light / noise / blur that the condition detector finds
-(see `enhance`) and keeps whichever read is more confident.
+(see `mlpilot.media.conditions.enhance`) and keeps whichever read is more confident.
 
 ### `detect_plates()`
 

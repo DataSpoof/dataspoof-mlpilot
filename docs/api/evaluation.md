@@ -22,6 +22,7 @@ Evaluation & explainability: metrics, SHAP explanations, error analysis, fairnes
 
 Every function takes a fitted `AutoML` model (or a scikit-learn estimator plus
 `target=...`) and labelled data:
+
 ```
 report = ac.evaluate_model(model, test)            # metrics, confusion matrix, calibration
 shap = ac.explain(model, test)                     # per-row + global SHAP values

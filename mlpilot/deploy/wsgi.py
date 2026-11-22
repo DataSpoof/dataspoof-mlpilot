@@ -14,6 +14,9 @@ Configured by environment variables:
 * ``AC_FEEDBACK_LOG``      JSONL file for POST /feedback (default: next to the prediction log)
 * ``AC_MONITOR_PATH``      a saved Monitor: live drift + estimated performance as Prometheus gauges
 * ``AC_WATCH_SECONDS``     hot reload: re-check the model (or the registry) every N seconds
+* ``AC_RATE_LIMIT``        per-client limit, e.g. ``120/minute`` (429 + Retry-After beyond it)
+* ``AC_TRUST_PROXY=1``     identify clients by the first X-Forwarded-For address (behind a proxy)
+* ``AC_VALIDATE``          ``strict`` (reject bad records with 422), ``warn`` (default) or ``off``
 * ``AC_REGISTRY`` + ``AC_MODEL_NAME``   serve the registry's production model instead of
                            ``AC_MODEL_PATH`` (with AC_WATCH_SECONDS, promotions go live by themselves)
 """
@@ -31,7 +34,10 @@ def build_app():
                   feedback_log=os.environ.get("AC_FEEDBACK_LOG") or None,
                   monitor=os.environ.get("AC_MONITOR_PATH") or None,
                   tracing=os.environ.get("AC_TRACING", "0") == "1",
-                  public_metrics=os.environ.get("AC_PUBLIC_METRICS", "1") != "0")
+                  public_metrics=os.environ.get("AC_PUBLIC_METRICS", "1") != "0",
+                  rate_limit=os.environ.get("AC_RATE_LIMIT") or None,
+                  trust_proxy=os.environ.get("AC_TRUST_PROXY", "0") == "1",
+                  validate=os.environ.get("AC_VALIDATE", "warn"))
     if os.environ.get("AC_REGISTRY"):
         from ..registry import ModelRegistry
         from .server import app_from_registry

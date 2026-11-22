@@ -45,6 +45,9 @@ from .anomaly import AutoAnomaly
 from .causal import UpliftModel, estimate_effect, qini
 from .scale import to_sql, transform_file
 from . import compression
+from . import orchestration, supply_chain
+from .orchestration import Goal, goal_from_text
+from .supply_chain import generate_sbom, scan_model
 from .compression import DtypeReport, OptimizeDtypes, dequantize_vectors, optimize_dtypes, quantize_vectors
 from .deploy.quantize import QuantizationReport, quantize_model, quantize_onnx
 from .ingestion import (BigQuerySource, IncrementalLoader, IngestResult, RESTSource, SnowflakeSource, SQLSource,

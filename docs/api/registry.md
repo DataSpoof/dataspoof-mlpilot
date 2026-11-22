@@ -1,11 +1,11 @@
-# Tracking & registry: API reference
+# Tracking, registry & model governance: API reference
 
-Generated from the source docstrings. For a task-oriented introduction, read the [Tracking & registry guide](../guide/registry.md).
+Generated from the source docstrings. For a task-oriented introduction, read the [Tracking, registry & model governance guide](../guide/registry.md).
 
 **On this page:**
 
 - [`mlpilot.registry`](#mlpilotregistry)
-- [`mlpilot.registry.models`](#mlpilotregistrymodels): `PromotionError`, `ModelVersion`, `ModelRegistry`
+- [`mlpilot.registry.models`](#mlpilotregistrymodels): `PromotionError`, `ModelRetiredError`, `ModelVersion`, `ModelRegistry`
 - [`mlpilot.registry.tracking`](#mlpilotregistrytracking): `Run`, `Tracker`
 
 ---
@@ -32,10 +32,12 @@ Both are plain directories of JSON files — no server, easy to back up or put o
 Model registry: versioned models moving through dev → qa → staging → production.
 
 Layout:
+
 ```
 <root>/<model name>/v<N>/model/        the saved model (checksummed by AutoML.save)
 <root>/<model name>/v<N>/version.json  metrics, run, dataset, stage, who/when
 <root>/<model name>/history.jsonl      every stage change, with who, when and why
+<root>/<model name>/governance.json    risk level, owner, review date, retirement
 ```
 
 ### class `PromotionError`
@@ -45,6 +47,14 @@ class PromotionError(Exception):
 ```
 
 A model version failed the checks required to move to a stage.
+
+### class `ModelRetiredError`
+
+```python
+class ModelRetiredError(KeyError):
+```
+
+The model was retired; loading it needs `allow_retired=True`.
 
 ### class `ModelVersion`
 
@@ -146,10 +156,40 @@ version if there is one, else the newest version.
 #### `ModelRegistry.load()`
 
 ```python
-load(name: str, version: int | None=None, stage: str | None=None)
+load(name: str, version: int | None=None, stage: str | None=None, *, allow_retired: bool=False)
 ```
 
 Load a model (default: the production version). The checksum is verified on load.
+A retired model raises `ModelRetiredError` unless `allow_retired`.
+
+#### `ModelRegistry.governance()`
+
+```python
+governance(name: str) -> dict
+```
+
+Risk level, owner, review date and retirement of model `name` (`{}` if never set).
+
+#### `ModelRegistry.set_risk()`
+
+```python
+set_risk(name: str, level: str, *, reason: str, owner: str | None=None, review_by: str | None=None) -> dict
+```
+
+Classify the model's risk (`minimal` / `limited` / `high` / `unacceptable`).
+
+* `unacceptable`: no version can move to staging or production.
+* `high`: production needs `approved_by` with two people other than the promoter, and
+  a risk review not past `review_by` (an ISO date).
+
+#### `ModelRegistry.retire()`
+
+```python
+retire(name: str, *, reason: str, replacement: str | None=None) -> dict
+```
+
+Retire the whole model: every version is archived, loading and promotion are refused,
+and users are pointed at `replacement`.
 
 #### `ModelRegistry.history()`
 
@@ -168,14 +208,16 @@ Failed requirements for a version, e.g. `{"test_roc_auc": 0.85, "test_rmse": ("<
 #### `ModelRegistry.promote()`
 
 ```python
-promote(name: str, version: int, stage: str, *, reason: str | None=None, require: dict | None=None, archive_existing: bool=True, must_beat_production: str | None=None) -> ModelVersion
+promote(name: str, version: int, stage: str, *, reason: str | None=None, require: dict | None=None, archive_existing: bool=True, must_beat_production: str | None=None, approved_by: list | None=None) -> ModelVersion
 ```
 
 Move a version to `stage`. Moving to production archives the current production
 version (`archive_existing`). `require` sets metric thresholds, and
 `must_beat_production="test_roc_auc"` requires the candidate to be at least as good as
 the current production model on that metric (use a `-` prefix, e.g. `"-test_rmse"`,
-for lower-is-better). Failing checks raise `PromotionError` and nothing changes.
+for lower-is-better). `approved_by`: the people who approved this change (a high-risk
+model needs two, see `set_risk`). Failing checks raise `PromotionError` and
+nothing changes.
 
 #### `ModelRegistry.rollback()`
 
@@ -194,6 +236,7 @@ Put the previous production version back into production.
 Experiment tracking: every training run's parameters, metrics, datasets and artifacts.
 
 Layout (plain files, easy to back up, diff or sync to object storage):
+
 ```
 <root>/<experiment>/<run_id>/run.json        params, tags, datasets, status, git, timings
 <root>/<experiment>/<run_id>/metrics.jsonl   one line per logged metric value (with step)

@@ -8,11 +8,14 @@
                           ``Contract.infer`` writes one from data you trust.
 * ``compare_schemas``     added / removed / retyped columns between two datasets.
 * ``ValidateContract`` / ``QualityGate``   pipeline steps that enforce all of the above.
+* ``DataMonitor``         data observability over time: freshness, volume, schema, nulls,
+                          distribution, with SLAs.  ``reconcile(source, destination, key=)``.
 """
 
 from .checks import (DEFAULT_WEIGHTS, DIMENSIONS, Issue, QualityReport, check_quality, grade)
 from .contracts import (Contract, ContractError, ContractResult, ContractViolation, RuleResult)
 from .pipeline_steps import QualityGate, QualityGateError, QualityWarning, ValidateContract
+from .observability import DataMonitor, ObservationIssue, ObservationReport, ReconciliationReport, reconcile
 from .profile import ColumnProfile, Profile, profile, semantic_type
 from .schema import SchemaDiff, compare_schemas, infer_schema
 
@@ -22,4 +25,5 @@ __all__ = [
     "Contract", "ContractResult", "RuleResult", "ContractError", "ContractViolation",
     "infer_schema", "compare_schemas", "SchemaDiff",
     "ValidateContract", "QualityGate", "QualityGateError", "QualityWarning",
+    "DataMonitor", "ObservationReport", "ObservationIssue", "reconcile", "ReconciliationReport",
 ]

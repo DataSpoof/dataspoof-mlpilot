@@ -7,7 +7,7 @@ build-backend = "maturin"
 # The PyPI name is "dataspoof-mlpilot" ("mlpilot" is too close to an existing "ml-pilot");
 # the import name and the CLI are `mlpilot`.
 name = "dataspoof-mlpilot"
-version = "2.2.0"
+version = "2.3.0"
 description = "MLPilot (formerly AutomatedCleaning): automated data science, from raw data to monitored production models, with a Rust engine"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -208,6 +208,7 @@ exclude = [
     { path = ".claude/**/*", format = "sdist" },
     { path = "assets/**/*", format = "sdist" },
     { path = "images/**/*", format = "sdist" },
+    { path = "docs/assets/mlpilot-architecture.*", format = "sdist" },
     { path = "example.py", format = "sdist" },
     { path = "requirements.txt", format = "sdist" },
     { path = "compat/**/*", format = "sdist" },

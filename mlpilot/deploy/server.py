@@ -58,15 +58,79 @@ log = logging.getLogger("mlpilot.deploy")
 
 _STATUS = {200: "200 OK", 400: "400 Bad Request", 401: "401 Unauthorized", 403: "403 Forbidden", 404: "404 Not Found",
            405: "405 Method Not Allowed", 413: "413 Payload Too Large", 415: "415 Unsupported Media Type",
-           422: "422 Unprocessable Entity", 500: "500 Internal Server Error"}
+           422: "422 Unprocessable Entity", 429: "429 Too Many Requests", 500: "500 Internal Server Error"}
 _BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 _RECORD_KEYS = ("records", "instances", "data", "inputs")
 
 
 class _HTTPError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, headers: list | None = None):
         super().__init__(message)
-        self.status, self.message = status, message
+        self.status, self.message, self.headers = status, message, headers or []
+
+
+_PERIODS = {"second": 1.0, "s": 1.0, "minute": 60.0, "min": 60.0, "m": 60.0, "hour": 3600.0, "h": 3600.0}
+
+
+class RateLimiter:
+    """Token bucket per client: ``"120/minute"`` allows bursts of 120 and refills 2 per second."""
+
+    def __init__(self, spec: str, max_clients: int = 10_000):
+        try:
+            n, per = spec.replace(" ", "").split("/")
+            self.capacity, period = float(n), _PERIODS[per.lower()]
+        except (ValueError, KeyError):
+            raise ValueError(f"rate_limit must look like '120/minute' (per second / minute / hour), got {spec!r}") from None
+        if self.capacity <= 0:
+            raise ValueError("rate_limit must allow at least one request")
+        self.rate = self.capacity / period
+        self.buckets: OrderedDict = OrderedDict()
+        self.max_clients = max_clients
+        self.lock = threading.Lock()
+
+    def check(self, client: str, now: float | None = None) -> float:
+        """0 when allowed, otherwise the seconds to wait."""
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            tokens, last = self.buckets.pop(client, (self.capacity, now))
+            tokens = min(self.capacity, tokens + (now - last) * self.rate)
+            wait = 0.0
+            if tokens >= 1:
+                tokens -= 1
+            else:
+                wait = (1 - tokens) / self.rate
+            self.buckets[client] = (tokens, now)
+            while len(self.buckets) > self.max_clients:
+                self.buckets.popitem(last=False)
+            return wait
+
+
+_NUMERIC = ("Int", "UInt", "Float", "Decimal")
+
+
+def validate_records(records: list, schema: dict, columns: list) -> list:
+    """Problems with ``records`` for a model trained on ``schema`` ({column: dtype}): required
+    columns missing from a record, and non-numeric values in numeric columns."""
+    problems: list = []
+    for i, r in enumerate(records[:1000]):
+        if not isinstance(r, dict):
+            problems.append(f"record {i}: not an object")
+            continue
+        missing = [c for c in columns if c not in r]
+        if missing:
+            problems.append(f"record {i}: missing {missing[:10]}")
+        for c in columns:
+            v, t = r.get(c), str(schema.get(c, ""))
+            if v is None or not t.startswith(_NUMERIC):
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                try:
+                    float(str(v).replace(",", ""))
+                except ValueError:
+                    problems.append(f"record {i}: {c}={v!r} is not a number")
+        if len(problems) >= 20:
+            break
+    return problems
 
 
 class Metrics:
@@ -294,7 +358,8 @@ def make_app(model, *, api_key: str | None = None, name: str | None = None, vers
              max_rows: int = 10_000, max_body_bytes: int = 10 * 1024 * 1024, prediction_log=None,
              canary=None, shadow=None, tracing: bool = False, public_metrics: bool = True,
              feedback_log=None, monitor=None, drift_window: int = 2000, drift_every: int = 500,
-             reloader: Callable | None = None, watch: float | None = None, recent_predictions: int = 100_000):
+             reloader: Callable | None = None, watch: float | None = None, recent_predictions: int = 100_000,
+             rate_limit: str | None = None, trust_proxy: bool = False, validate: str = "warn"):
     """Build the WSGI application for ``model`` (an object or a saved-model path).
 
     * ``prediction_log``: JSONL file to append every request's inputs and outputs to (feed it to
@@ -312,7 +377,16 @@ def make_app(model, *, api_key: str | None = None, name: str | None = None, vers
       up; with ``reloader`` (see :func:`app_from_registry`), whatever it returns. ``POST
       /admin/reload`` (needs the API key) reloads immediately. In-flight requests finish on the
       old model; the swap is atomic.
+    * ``rate_limit="120/minute"``: per-client token bucket (client = hashed API key, else the
+      address; ``trust_proxy=True`` uses the first ``X-Forwarded-For`` address). Excess requests
+      get ``429`` with ``Retry-After``.
+    * ``validate``: ``"strict"`` rejects records with missing input columns or non-numeric values
+      in numeric columns (``422``); ``"warn"`` (default) scores them and lists the problems in
+      the response's ``warnings``; ``"off"`` skips the check.
     """
+    if validate not in ("off", "warn", "strict"):
+        raise ValueError("validate must be 'off', 'warn' or 'strict'")
+    limiter = RateLimiter(rate_limit) if rate_limit else None
     from ..secretstore import resolve
     api_key = resolve(api_key if api_key is not None else os.environ.get("AC_API_KEY") or None)  # vault://, aws-sm://...
     state = {"served": _Served(model, name, version, canary, shadow)}
@@ -564,6 +638,16 @@ def make_app(model, *, api_key: str | None = None, name: str | None = None, vers
             given = environ.get("HTTP_X_API_KEY", "")
             if not hmac.compare_digest(given.encode(), api_key.encode()):
                 raise _HTTPError(401, "Missing or invalid X-API-Key header.")
+        if limiter is not None:
+            if environ.get("HTTP_X_API_KEY"):
+                client = "key:" + hashlib.sha256(environ["HTTP_X_API_KEY"].encode()).hexdigest()[:16]
+            elif trust_proxy and environ.get("HTTP_X_FORWARDED_FOR"):
+                client = "ip:" + environ["HTTP_X_FORWARDED_FOR"].split(",")[0].strip()
+            else:
+                client = "ip:" + environ.get("REMOTE_ADDR", "unknown")
+            wait = limiter.check(client)
+            if wait:
+                raise _HTTPError(429, "Rate limit exceeded; slow down.", [("Retry-After", str(max(1, round(wait))))])
         if path == "/metrics":
             return 200, metrics.render(), "metrics", None, 0
         if path == "/metadata":
@@ -584,6 +668,13 @@ def make_app(model, *, api_key: str | None = None, name: str | None = None, vers
             if method != "POST":
                 raise _HTTPError(405, "Use POST.")
             records = read_body(environ)
+            problems: list = []
+            if validate != "off":
+                prep = getattr(served.model, "preprocess_", None)
+                schema = getattr(prep, "input_schema_", None) or {}
+                problems = validate_records(records, schema, expected_columns(served.model))
+                if problems and validate == "strict":
+                    raise _HTTPError(422, "Invalid records: " + "; ".join(problems[:10]))
             variant = choose(served, request_id)
             try:
                 payload = served.variants[variant](records)
@@ -593,6 +684,8 @@ def make_app(model, *, api_key: str | None = None, name: str | None = None, vers
                            n=len(records))
             ids = [f"{request_id}-{i}" for i in range(len(records))]
             payload["prediction_ids"] = ids
+            if problems:
+                payload["warnings"] = problems
             remember(ids, payload.get("predictions", payload.get("clusters")), variant, served.meta.get("version"))
             if pool is not None and served.shadow is not None:
                 pool.submit(run_shadow, served, records, dict(payload), request_id, variant)
@@ -610,10 +703,11 @@ def make_app(model, *, api_key: str | None = None, name: str | None = None, vers
         route, variant, rows = "other", None, 0
         span = tracer.start_as_current_span("ac.request") if tracer else None
         ctx = span.__enter__() if span else None
+        extra_headers: list = []
         try:
             status, payload, route, variant, rows = handle(environ, request_id, method, path)
         except _HTTPError as exc:
-            status, payload = exc.status, {"error": exc.message}
+            status, payload, extra_headers = exc.status, {"error": exc.message}, exc.headers
         except Exception:
             log.exception("request %s failed", request_id)
             status, payload = 500, {"error": "Internal error.", "request_id": request_id}
@@ -633,7 +727,7 @@ def make_app(model, *, api_key: str | None = None, name: str | None = None, vers
             body, ctype = json.dumps(jsonable(payload), default=str).encode(), "application/json"
         start_response(_STATUS[status], [("Content-Type", ctype), ("Content-Length", str(len(body))),
                                           ("X-Request-ID", request_id), ("X-Content-Type-Options", "nosniff"),
-                                          ("Cache-Control", "no-store")])
+                                          ("Cache-Control", "no-store"), *extra_headers])
         log.info("%s %s %s %d %.1fms", request_id, method, path, status, elapsed * 1000)
         return [body]
 

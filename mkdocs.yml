@@ -105,6 +105,7 @@ nav:
       - Lineage & catalogs: guide/lineage.md
       - Deploy on AWS: guide/aws.md
       - Quantization & compression: guide/quantization.md
+      - Autonomous engine & operations: guide/enterprise-operations.md
   - API reference:
       - Ingestion: reference/ingestion.md
       - Pipeline core: reference/core.md
@@ -136,9 +137,13 @@ nav:
       - CI/CD: reference/cicd.md
       - Secrets: reference/secretstore.md
       - Lineage: reference/lineage.md
+      - Autonomous engine: reference/orchestration.md
+      - Operations: reference/operations.md
+      - Model privacy: reference/model_privacy.md
   - Architecture: architecture.md
   - Project:
       - Changelog: changelog.md
       - Versioning & support: policies.md
+      - Enterprise gap audit: enterprise-gap-audit.md
       - Security: security.md
       - Contributing: contributing.md

@@ -1,12 +1,13 @@
-# Profiling & data quality: API reference
+# Profiling, data quality & observability: API reference
 
-Generated from the source docstrings. For a task-oriented introduction, read the [Profiling & data quality guide](../guide/quality.md).
+Generated from the source docstrings. For a task-oriented introduction, read the [Profiling, data quality & observability guide](../guide/quality.md).
 
 **On this page:**
 
 - [`mlpilot.quality`](#mlpilotquality)
 - [`mlpilot.quality.checks`](#mlpilotqualitychecks): `jsonable`, `grade`, `Issue`, `QualityReport`, `check_quality`
 - [`mlpilot.quality.contracts`](#mlpilotqualitycontracts): `ContractError`, `ContractViolation`, `RuleResult`, `ContractResult`, `Contract`
+- [`mlpilot.quality.observability`](#mlpilotqualityobservability): `ObservationIssue`, `ObservationReport`, `DataMonitor`, `ReconciliationReport`, `reconcile`
 - [`mlpilot.quality.pipeline_steps`](#mlpilotqualitypipeline_steps): `QualityWarning`, `QualityGateError`, `ValidateContract`, `QualityGate`
 - [`mlpilot.quality.profile`](#mlpilotqualityprofile): `semantic_type`, `ColumnProfile`, `Profile`, `profile`
 - [`mlpilot.quality.schema`](#mlpilotqualityschema): `infer_schema`, `SchemaDiff`, `compare_schemas`
@@ -27,6 +28,8 @@ Profiling & data quality: module 2 of the platform, built on the shared pipeline
   `Contract.infer` writes one from data you trust.
 * `compare_schemas`     added / removed / retyped columns between two datasets.
 * `ValidateContract` / `QualityGate`   pipeline steps that enforce all of the above.
+* `DataMonitor`         data observability over time: freshness, volume, schema, nulls,
+  distribution, with SLAs.  `reconcile(source, destination, key=)`.
 
 ---
 
@@ -185,6 +188,7 @@ Run every data-quality check on `df` and score it. See the module docstring.
 Data contracts: declare what valid data looks like, then validate every batch against it.
 
 A contract is plain YAML/JSON, so it can live in version control and be reviewed like code:
+
 ```
 name: customers
 extra_columns: warn          # allow | warn | error
@@ -384,6 +388,163 @@ validate(df) -> ContractResult
 ```
 
 Check `df` against every rule and return a `ContractResult`.
+
+---
+
+## `mlpilot.quality.observability`
+
+<sub>Source: [`mlpilot/quality/observability.py`](https://github.com/DataSpoof/dataspoof-mlpilot/blob/main/mlpilot/quality/observability.py)</sub>
+
+Data observability and reconciliation: is today's data on time, complete and the same shape
+as yesterday's, and did it arrive intact?
+
+```python
+mon = DataMonitor("orders", history="observability/orders.jsonl", timestamp="created_at",
+                  sla={"max_staleness_hours": 6, "min_rows": 10_000, "max_row_change": 0.3})
+rep = mon.observe(todays_orders)          # compares with the stored history, then appends to it
+rep.passed, rep.issues
+mon.history()                             # one row per observation: rows, freshness, issues
+```
+
+```python
+rec = reconcile(source_df, warehouse_df, key="order_id")
+rec.passed, rec.summary()                 # missing / extra / duplicate keys, changed rows, sums
+```
+
+Five signals are tracked:
+- **Freshness:** the age of the newest timestamp.
+- **Volume:** the row count against the median of recent observations.
+- **Schema:** columns added, removed or retyped.
+- **Completeness:** null rates per column, as an absolute SLA and as a jump since last time.
+- **Distribution:** the Population Stability Index of every numeric column against the previous
+  observation, from stored decile bins.
+
+The history holds statistics only, never rows.
+
+### class `ObservationIssue`
+
+```python
+class ObservationIssue:
+```
+
+| Field | Type | Default |
+|---|---|---|
+| `check` | `str` | required |
+| `severity` | `str` | required |
+| `message` | `str` | required |
+| `column` | `str \| None` | `None` |
+
+### class `ObservationReport`
+
+```python
+class ObservationReport:
+```
+
+| Field | Type | Default |
+|---|---|---|
+| `dataset` | `str` | required |
+| `observed_at` | `str` | required |
+| `rows` | `int` | required |
+| `issues` | `list` | required |
+| `snapshot` | `dict` | required |
+
+#### `ObservationReport.passed` *(property)*
+
+```python
+passed: bool
+```
+
+#### `ObservationReport.summary()`
+
+```python
+summary() -> str
+```
+
+### class `DataMonitor`
+
+```python
+class DataMonitor:
+```
+
+Observe a dataset batch after batch and check it against SLAs and its own history.
+
+`sla` keys (all optional):
+- `max_staleness_hours`: the newest `timestamp` may be at most this old.
+- `min_rows`: the fewest rows a batch may have.
+- `max_row_change`: relative change against the median of the last `window` batches
+  (default 0.5).
+- `max_null_rate`: one number, or `{column: rate}`.
+- `max_null_increase`: the largest jump since the last batch (default 0.1).
+- `schema`:
+  - `"strict"`: any change is an error;
+  - `"additive"` (the default): new columns are a warning, removed or retyped ones are
+    errors;
+  - `None`: don't check the schema.
+- `max_psi`: the distribution shift that counts as a warning (default 0.25).
+
+**Constructor**
+
+```python
+DataMonitor(name: str, *, history='data_monitor.jsonl', timestamp: str | None=None, sla: dict | None=None)
+```
+
+#### `DataMonitor.observe()`
+
+```python
+observe(df, *, at: _dt.datetime | None=None, record: bool=True) -> ObservationReport
+```
+
+Check one batch (a DataFrame, or anything `mlpilot.read` accepts) and append its
+statistics to the history (`record=False` checks without recording).
+
+#### `DataMonitor.history()`
+
+```python
+history() -> pl.DataFrame
+```
+
+### class `ReconciliationReport`
+
+```python
+class ReconciliationReport:
+```
+
+| Field | Type | Default |
+|---|---|---|
+| `source_rows` | `int` | required |
+| `destination_rows` | `int` | required |
+| `key` | `str \| None` | required |
+| `missing_keys` | `list` | required |
+| `extra_keys` | `list` | required |
+| `n_missing` | `int` | required |
+| `n_extra` | `int` | required |
+| `duplicate_keys` | `dict` | required |
+| `changed_rows` | `int` | required |
+| `changed_sample` | `list` | required |
+| `columns` | `pl.DataFrame` | required |
+| `schema_differences` | `list` | required |
+
+#### `ReconciliationReport.passed` *(property)*
+
+```python
+passed: bool
+```
+
+#### `ReconciliationReport.summary()`
+
+```python
+summary() -> str
+```
+
+### `reconcile()`
+
+```python
+def reconcile(source: pl.DataFrame, destination: pl.DataFrame, *, key: str | list | None=None, columns=None, rel_tolerance: float=1e-09, sample: int=20) -> ReconciliationReport
+```
+
+Check that `destination` holds exactly what `source` had (after a copy, an ETL job or
+a migration): row counts, keys, per-column null counts and numeric sums, schema, and, with a
+`key`, row-by-row differences.
 
 ---
 

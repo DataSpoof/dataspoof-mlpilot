@@ -31,6 +31,7 @@ Jenkins or Azure DevOps):
 * `mlpilot deploy-sagemaker`   blue/green endpoint update (or use the Terraform modules)
 
 `gates.yml`:
+
 ```
 metrics:    {min: {roc_auc: 0.75}, max: {}}
 fairness:   {sensitive: [gender], limits: {disparate_impact_ratio: 0.8}}
@@ -112,6 +113,7 @@ envs.status("churn")          # which version is where, with provenance
 ```
 
 `environments.yml`:
+
 ```
 order: [dev, qa, prod]
 environments:

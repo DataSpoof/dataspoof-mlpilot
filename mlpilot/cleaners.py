@@ -115,6 +115,11 @@ class DropColumns(Step):
                 continue
             if (p["drop_id_like"] and df.height > 10 and not dtype.is_float()
                     and dtype != pl.Boolean and n_unique / n >= p["id_uniqueness"]):
+                # Free text (reviews, posts, descriptions) is almost always unique too, but it is a
+                # feature, not an ID: TextEmbeddings turns it into numbers later.
+                from .quality.profile import semantic_type
+                if dtype == pl.String and semantic_type(s, c) == "text":
+                    continue
                 reasons[c] = f"ID-like ({n_unique / n:.0%} unique)"
         if p["drop_duplicate_columns"]:
             buckets: dict = {}
